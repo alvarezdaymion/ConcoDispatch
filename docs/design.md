@@ -14,7 +14,7 @@ Legacy phone text → same queue/ledger → original text creation behavior
 Mac hold-backslash → Dictate Text → Stop → AppleScript → Hermes Triage
 ```
 
-Hammerspoon remains the scheduler. No extra background daemon or silence detector is introduced. The Mac trigger stays unchanged; the audio fix targets the phones.
+Hammerspoon schedules queue processing. The mobile audio and direct Mac dictation paths are separate; neither needs an additional background daemon or silence detector.
 
 ## Identity
 
@@ -24,7 +24,7 @@ Audio IDs are recovered from filenames. The receiver accepts doubled audio exten
 
 Supported audio suffixes: `.m4a`, `.wav`, `.mp3`, `.caf`, `.aiff`. The phone source produces `.m4a`; doubled extensions are tolerated. Generated action UUIDs connect workflow actions, not machine or account identities.
 
-The text baseline remains rebuildable with `--capture-mode dictation`. It writes:
+The alternative text workflow is rebuildable with `--capture-mode dictation`. It writes:
 
 ```text
 VOICEKANBAN/2
@@ -42,20 +42,24 @@ Draft a project outline.
 2. Read a regular, nonsymlink source and check file identity/size/timestamps before and after the read.
 3. Atomically archive the exact bytes locally, fsync the file and directory, and commit an `archived` SQLite receipt before transcription.
 4. Transcribe the archived file with the optional local `faster-whisper` model. Runtime model loading is offline-only, CPU/int8, English `base.en`. There is no network/cloud fallback.
-5. Persist the entire transcript as a fsynced sidecar before any task creation. Reuse it across retries and process restarts.
+5. Persist the entire transcript as a fsynced sidecar under `archive/.transcripts/`, separate from raw capture filenames. Bind its SHA-256 to the receipt before task creation and validate it on retries and notification recovery.
 6. Create a card with a short title, full transcript via `--body-file`, assignee `default`, creator `iphone-voice-capture`, and key `iphone-voice-capture:<capture_id>`.
 7. Read the exact task back using native `kanban show --json`. Verify task identity and exact body before marking the receipt confirmed.
-8. Send an optional receipt if configured, then hash-check the source again. Remove only the unchanged queue file. The local recording and transcript remain archived.
+8. Send an optional receipt if configured. Atomically move the source into a unique hidden `.cleanup-*` directory inside the queue, then verify and remove that claimed file. A new arrival at the original pathname is left alone. Restore a changed claimed file without overwriting a concurrent arrival; retain it for manual recovery if restoration fails. The local recording and transcript remain archived.
 
 Failures retain source/archive state and record attempt counts plus the last processing error where a receipt exists. A missing or blank transcript creates no task. Pending audio receipts can recover from the archive even if the queue source disappeared. A create whose response was lost retries with the same identity and cached transcript.
 
-The existing SQLite schema is preserved. Old confirmed text rows do not need migration. Legacy text preserves its baseline semantics: its create response supplies confirmation without the new independent audio body readback. Unconfirmed orphaned legacy text still requires restoring its original queue source for manual recovery.
+The receiver upgrades SQLite ledgers transactionally without resetting receipts, adding nullable `transcript_sha256` and a durable `legacy_transcript_eligible` flag. Only audio receipts already present in a pre-namespace ledger (one lacking both columns) gain eligibility to import flat legacy sidecars. New receipts and receipts in ledgers already using `transcript_sha256` remain ineligible, including retries with no digest or a missing cache. Eligible sidecars are copied into `archive/.transcripts/` only when they are not another receipt's raw text archive; an unowned flat file alone never grants eligibility. Binding the first valid transcript digest also clears eligibility, so uncertain creates retry with the pinned namespaced cache and the same idempotency key.
+
+Historical caches have no prior digest, so migration cannot detect modifications made before first binding. A ledger already upgraded by a version without the eligibility flag cannot reliably distinguish remaining old sidecars from unrelated raw archives; those sidecars are not automatically imported. If recovery requires such a cache, verify its provenance and restore the original into the namespaced location rather than clearing a pinned digest or resetting the ledger. Old confirmed text rows keep their semantics: the create response supplies confirmation without independent audio body readback. Unconfirmed orphaned legacy text still requires restoring its original queue source for manual recovery.
 
 ## Recovery boundaries
 
 - Inspect the task, receipt, archive, and source before repeating a real request.
 - Never overwrite a collision archive or delete receipts to force progress.
 - Do not edit a durable transcript sidecar after task creation; it is the exact body used for readback and retries.
+- If a pinned transcript is missing or changed, restore the original rather than retranscribing an uncertain create. Corrupt pending notifications record an error but do not prevent healthy queue entries from processing.
+- After a crash during cleanup, inspect hidden `.cleanup-*` queue directories. Retained files are not automatically requeued; compare the archive and receipt before restoring them. Queue writers must not edit claimed files in place.
 - Optional receipt retries can repeat a message after an uncertain send response. Enabling a destination later can send historical unnotified confirmations, including short transcript summaries; review that scope deliberately.
 - Recordings are retained locally indefinitely. There is no automatic purge in this version.
 - Native Hermes idempotency is a retry-safety mechanism, not a distributed exactly-once guarantee. Archived/removed tasks and externally edited cards can invalidate assumptions.
@@ -63,9 +67,9 @@ The existing SQLite schema is preserved. Old confirmed text rows do not need mig
 
 ## Frozen deployment
 
-`scripts/install_snapshot.py` installs regular, tracked runtime source from a clean committed revision into a commit-named directory. It excludes settings, recordings, environments, and state. `SOURCE.json` binds the commit, tree, and file hashes; reinstall verifies existing snapshot contents instead of overwriting them.
+`scripts/install_snapshot.py` installs regular, tracked runtime source from a clean committed revision into a commit-named directory. It excludes settings, recordings, environments, and state. `SOURCE.json` binds the commit, tree, and file hashes; reinstall verifies the complete path set, rejects symlinks and unexpected additions, and validates file hashes instead of overwriting contents. The receiver wrapper disables bytecode writes to keep frozen trees unchanged. Direct Python invocation of a snapshot must also disable bytecode writes; existing extra files, including caches, require review before reinstallation can verify the snapshot.
 
-Dependencies and private config stay outside the snapshot. Point Hammerspoon at the frozen path rather than an actively edited branch checkout. A snapshot installed from an unmerged fix branch is a validation deployment, not a claim that the fix is on `main`.
+Dependencies and private config stay outside the snapshot. Point Hammerspoon at the frozen path rather than an actively edited branch checkout. The manifest identifies the installed revision; it does not establish release approval.
 
 ## Verification
 

@@ -1,6 +1,6 @@
 # ConcoDispatch
 
-**Hold a phone button. Explain the task. Tap Stop. An agent starts working.**
+**Hold a phone button. Explain the task. Tap Stop to queue it for an agent.**
 
 A small iPhone-to-Mac bridge for [Hermes Agent Kanban](https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban). It keeps task capture simple while preserving the context in a long spoken explanation.
 
@@ -10,7 +10,7 @@ iPhone Action Button → Record Audio → Stop → iCloud queue
 Mac: archive audio → local transcription → full task body → Hermes Kanban
 ```
 
-The Mac also retains the original hold-backslash dictation shortcut. This change targets the phone capture path, not the Mac interaction.
+The Mac also supports a hold-backslash dictation shortcut that creates a Triage card directly.
 
 ## Why audio first?
 
@@ -21,7 +21,7 @@ No file picker, transcript review, or separate Send step. No silence-based submi
 ## Included
 
 - Rebuildable mobile Shortcut: immediate recording, manual Stop, unique capture filename, literal iCloud folder.
-- The original dictation baseline, preserved by PR #1 and still rebuildable using `--capture-mode dictation`.
+- An alternative mobile dictation workflow, rebuildable using `--capture-mode dictation`.
 - Python receiver: local archival, SQLite receipts, stable Hermes idempotency keys, legacy text support.
 - Local English transcription using `faster-whisper` and a provisioned `base.en` model. Normal processing does not download a model or fall back to a cloud provider.
 - Mac Shortcut source and Hammerspoon hold-backslash trigger, with phone-queue polling every 15 seconds.
@@ -42,9 +42,11 @@ Microphone permissions, locked-phone launch, synchronization, and long recording
 
 ## 1. Set up local transcription
 
-Clone to a durable location such as `~/src/hermes-voice-kanban`, then:
+Clone to a durable location:
 
 ```sh
+git clone https://github.com/alvarezdaymion/ConcoDispatch.git "$HOME/src/ConcoDispatch"
+cd "$HOME/src/ConcoDispatch"
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements-audio.txt
 ```
@@ -59,7 +61,15 @@ Normal processing uses `local_files_only=True`. A missing dependency/model is a 
 
 ## 2. Configure the queue
 
-Create `~/Library/Application Support/Hermes Voice Kanban/config.sh` from `config.example.sh`. It is trusted shell code; keep it private.
+Create the receiver config:
+
+```sh
+mkdir -p "$HOME/Library/Application Support/Hermes Voice Kanban"
+cp config.example.sh "$HOME/Library/Application Support/Hermes Voice Kanban/config.sh"
+chmod 600 "$HOME/Library/Application Support/Hermes Voice Kanban/config.sh"
+```
+
+Edit the paths to match your checkout and environment. This file is trusted shell code; keep it private. Configuration and state paths retain the `Hermes Voice Kanban` name for compatibility.
 
 | Setting | Meaning |
 | --- | --- |
@@ -97,7 +107,7 @@ For polling and the preserved Mac trigger, load the module once from `~/.hammers
 
 ```lua
 require("hs.ipc")
-local repo = os.getenv("HOME") .. "/src/hermes-voice-kanban"
+local repo = os.getenv("HOME") .. "/src/ConcoDispatch"
 voiceKanban = dofile(repo .. "/hammerspoon/voice_kanban.lua").start({
     repo = repo,
     shortcutName = "Hermes Voice Kanban Mac",
@@ -114,7 +124,7 @@ The phone's saved notification means **queued**, not delivered. iCloud has varia
 
 The receiver archives audio before transcription or task creation. Full audio transcripts go into the task body, with a short board title. Failures retain the source and archive for retry; original recordings remain locally archived without an automatic purge. Replays reuse the capture identity rather than intentionally launching duplicate work.
 
-Do not immediately repeat an important request because a card has not appeared. First inspect the queue, receipt, archive, and error to distinguish sync delay from processing failure. See [design and recovery](docs/design.md) and the [both-phone acceptance checklist](docs/phone-tests.md).
+Do not immediately repeat an important request because a card has not appeared. First inspect the queue, receipt, archive, and error to distinguish sync delay from processing failure. See [design and recovery](docs/design.md) and the [physical-phone acceptance checklist](docs/phone-tests.md).
 
 ## Tests and limits
 
@@ -128,4 +138,4 @@ This is not a guaranteed delivery service. A sleeping Mac cannot receive; iCloud
 
 ## Portfolio and demonstration
 
-The project demonstrates a minimal interface backed by durable automation, not guaranteed iCloud delivery. [Demo notes](docs/demo.md) describe the problem, system, and evidence to capture. Use synthetic recordings and boards, review source/history, and obtain publication approval before making the repository or a video public.
+The project demonstrates a minimal interface backed by durable automation, not guaranteed iCloud delivery. [Demo notes](docs/demo.md) describe the system and evidence to capture. Use synthetic recordings and isolated boards; never expose real task content or account identifiers. See [security guidance](SECURITY.md) for data handling and vulnerability reporting.
