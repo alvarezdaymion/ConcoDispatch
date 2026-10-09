@@ -1,5 +1,5 @@
 #!/bin/sh
-# Hammerspoon runs this with /bin/sh, so an executable bit is not required.
+# Launchd runs this with /bin/sh, so an executable bit is not required.
 set -eu
 CONFIG=${VOICE_KANBAN_CONFIG:-"$HOME/Library/Application Support/Hermes Voice Kanban/config.sh"}
 if [ -f "$CONFIG" ]; then

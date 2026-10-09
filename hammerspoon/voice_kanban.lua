@@ -1,5 +1,5 @@
 -- Tap backslash normally; hold to dictate; tap again to press Stop.
--- Load once from init.lua. start() accepts local paths; none are machine-bound.
+-- Optional legacy Mac dictation trigger only; launchd owns audio queue intake.
 local M = {}
 
 function M.start(settings)
@@ -7,15 +7,11 @@ function M.start(settings)
     local HOLD_SECONDS = settings.holdSeconds or 0.35
     local SHORTCUT_NAME = settings.shortcutName or "Hermes Voice Kanban Mac"
     local SHORTCUTS_CLI = settings.shortcutsCLI or "/usr/bin/shortcuts"
-    local REPO = settings.repo or (os.getenv("HOME") .. "/src/hermes-voice-kanban")
-    local QUEUE_INTERVAL_SECONDS = settings.queueIntervalSeconds or 15
 
     local trigger
     local holdTimer
     local holdFired = false
     local captureTask
-    local queueTask
-    local queueFailureNotified = false
 
     local function notifyFailure(message)
         hs.notify.new({title = "Hermes Voice Kanban", informativeText = message}):send()
@@ -90,30 +86,6 @@ function M.start(settings)
         return true
     end
 
-    local function runIPhoneQueueConsumer()
-        if queueTask and queueTask:isRunning() then return end
-        queueTask = hs.task.new("/bin/sh", function(exitCode, _, stderr)
-            if exitCode ~= 0 then
-                if not queueFailureNotified then
-                    local detail = (stderr and stderr ~= "") and stderr
-                        or "Queue consumer exited with an error."
-                    notifyFailure("iPhone queue failed: " .. detail)
-                    queueFailureNotified = true
-                end
-            else
-                queueFailureNotified = false
-            end
-            queueTask = nil
-        end, {REPO .. "/scripts/consume.sh"})
-        if not queueTask or not queueTask:start() then
-            queueTask = nil
-            if not queueFailureNotified then
-                notifyFailure("Could not start the iPhone voice queue consumer.")
-                queueFailureNotified = true
-            end
-        end
-    end
-
     trigger = hs.hotkey.new({}, "\\", function()
         holdFired = false
         if holdTimer then holdTimer:stop() end
@@ -138,11 +110,8 @@ function M.start(settings)
 
     trigger:enable()
     M.trigger = trigger
-    M.queueTimer = hs.timer.doEvery(QUEUE_INTERVAL_SECONDS, runIPhoneQueueConsumer)
-    runIPhoneQueueConsumer()
-    hs.autoLaunch(true)
-    hs.printf("Voice capture loaded: tap \\ normally; hold %.2fs to dictate; tap \\ again to finish; iPhone queue every %ds",
-              HOLD_SECONDS, QUEUE_INTERVAL_SECONDS)
+    hs.printf("Optional Mac dictation trigger: tap \\ normally; hold %.2fs to dictate; tap \\ again to finish",
+              HOLD_SECONDS)
     return M
 end
 

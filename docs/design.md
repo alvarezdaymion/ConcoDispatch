@@ -3,18 +3,18 @@
 ## Paths
 
 ```text
-iPhone Action Button → Record Audio → Stop → named audio file
+iPhone button / Mac native Shortcut → Record Audio → Stop → named audio file
                                                │ iCloud sync
-Mac Hammerspoon (15s) → receiver → raw archive + SQLite receipt
+Mac launchd (15s) → receiver → raw archive + SQLite receipt
                                 → offline transcript sidecar
                                 → Hermes create + exact body readback
-                                → optional receipt → remove unchanged source
+                                → remove unchanged source → optional receipt batch
 
 Legacy phone text → same queue/ledger → original text creation behavior
 Mac hold-backslash → Dictate Text → Stop → AppleScript → Hermes Triage
 ```
 
-Hammerspoon schedules queue processing. The mobile audio and direct Mac dictation paths are separate; neither needs an additional background daemon or silence detector.
+Launchd schedules nonoverlapping one-shot receiver passes. New Mac audio and phone audio share intake; legacy Mac dictation remains a separate direct-Triage option. Hammerspoon is an optional legacy trigger, never a receiver dependency. No silence detector is used.
 
 ## Identity
 
@@ -41,11 +41,11 @@ Draft a project outline.
 1. Acquire a nonblocking advisory lock in the state directory. Another receiver pass exits without work.
 2. Read a regular, nonsymlink source and check file identity/size/timestamps before and after the read.
 3. Atomically archive the exact bytes locally, fsync the file and directory, and commit an `archived` SQLite receipt before transcription.
-4. Transcribe the archived file with the optional local `faster-whisper` model. Runtime model loading is offline-only, CPU/int8, English `base.en`. There is no network/cloud fallback.
+4. Transcribe the archived file using an explicitly selected local backend. Apple SpeechAnalyzer/SpeechTranscriber uses prepared on-device assets on supported macOS 26+ systems. `--check` never downloads; only explicit `--prepare` may provision assets. Compatibility Whisper uses offline-only CPU/int8 English `base.en`. Both run in subprocesses with a positive finite deadline (default 600 seconds); no network/cloud fallback is permitted.
 5. Persist the entire transcript as a fsynced sidecar under `archive/.transcripts/`, separate from raw capture filenames. Bind its SHA-256 to the receipt before task creation and validate it on retries and notification recovery.
-6. Create a card with a short title, full transcript via `--body-file`, assignee `default`, creator `iphone-voice-capture`, and key `iphone-voice-capture:<capture_id>`.
+6. Commit routing alongside the new receipt, then create a card with a short title, full transcript via `--body-file`, configured assignee (default `default`), creator `iphone-voice-capture`, and stable key `iphone-voice-capture:<capture_id>`. Shared Mac audio deliberately uses the same historical key namespace. Explicit profile/board routing is reused for create and readback even if configuration changes during a retry. Historical receipts lack routing evidence: preserve their original board/profile configuration during the first upgraded pass. Omitted profile/board retains legacy ambient routing; new deployments should pin both.
 7. Read the exact task back using native `kanban show --json`. Verify task identity and exact body before marking the receipt confirmed.
-8. Send an optional receipt if configured. Atomically move the source into a unique hidden `.cleanup-*` directory inside the queue, then verify and remove that claimed file. A new arrival at the original pathname is left alone. Restore a changed claimed file without overwriting a concurrent arrival; retain it for manual recovery if restoration fails. The local recording and transcript remain archived.
+8. Atomically move the source into a unique hidden `.cleanup-*` directory inside the queue, then verify and remove that claimed file. A new arrival at the original pathname is left alone. Restore a changed claimed file without overwriting a concurrent arrival; retain it for manual recovery if restoration fails. The local recording and transcript remain archived. After all intake, attempt optional message receipts with bounded CLI calls (default 30 seconds). Message failures no longer retain confirmed queue sources or run ahead of healthy captures; unnotified confirmations retry from archives. Each pass can still spend bounded time delivering its receipt batch.
 
 Failures retain source/archive state and record attempt counts plus the last processing error where a receipt exists. A missing or blank transcript creates no task. Pending audio receipts can recover from the archive even if the queue source disappeared. A create whose response was lost retries with the same identity and cached transcript.
 
@@ -63,13 +63,13 @@ Historical caches have no prior digest, so migration cannot detect modifications
 - Optional receipt retries can repeat a message after an uncertain send response. Enabling a destination later can send historical unnotified confirmations, including short transcript summaries; review that scope deliberately.
 - Recordings are retained locally indefinitely. There is no automatic purge in this version.
 - Native Hermes idempotency is a retry-safety mechanism, not a distributed exactly-once guarantee. Archived/removed tasks and externally edited cards can invalidate assumptions.
-- Stable reads detect changes during a read, not every possible partially synced file. iCloud may delay delivery, and a stalled CLI/transcription process can stall polling. Physical-device and sync tests are necessary.
+- Stable reads detect changes during a read, not every possible partially synced file. iCloud may delay delivery. CLI/transcription deadlines bound stalls while preserving uncertain-create identity and cached bodies. Physical-device and sync tests are necessary.
 
 ## Frozen deployment
 
 `scripts/install_snapshot.py` installs regular, tracked runtime source from a clean committed revision into a commit-named directory. It excludes settings, recordings, environments, and state. `SOURCE.json` binds the commit, tree, and file hashes; reinstall verifies the complete path set, rejects symlinks and unexpected additions, and validates file hashes instead of overwriting contents. The receiver wrapper disables bytecode writes to keep frozen trees unchanged. Direct Python invocation of a snapshot must also disable bytecode writes; existing extra files, including caches, require review before reinstallation can verify the snapshot.
 
-Dependencies and private config stay outside the snapshot. Point Hammerspoon at the frozen path rather than an actively edited branch checkout. The manifest identifies the installed revision; it does not establish release approval.
+Dependencies, the compiled native helper and private config stay outside the snapshot; native Swift source is included. Point the LaunchAgent at the frozen path rather than an actively edited checkout. Generate and lint the plist without loading it during tests. Its per-user service polls with `StartInterval`, runs at login/load, and uses a restrictive umask. Create its state/log directory before bootstrap. Disable the old Hammerspoon queue scheduler during migration; preserve the existing ledger and button bindings. The manifest identifies the installed revision; it does not establish release approval.
 
 ## Verification
 

@@ -5,6 +5,21 @@ from voice_kanban.build_shortcut import build_workflow, main
 
 
 class AudioShortcutTests(unittest.TestCase):
+    def test_new_mac_audio_path_uses_shared_queue_not_direct_triage(self):
+        import plistlib
+        import tempfile
+        from voice_kanban.build_shortcut import write_unsigned
+        scratch = Path(__file__).resolve().parents[1] / '.local'
+        scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch) as tmp:
+            path = write_unsigned(Path(tmp) / 'mac-audio.shortcut', platform='mac-audio', queue_folder='SharedInbox/')
+            workflow = plistlib.loads(path.read_bytes())
+        identifiers = [action['WFWorkflowActionIdentifier'] for action in workflow['WFWorkflowActions']]
+        self.assertEqual(identifiers[0], 'is.workflow.actions.recordaudio')
+        self.assertIn('is.workflow.actions.documentpicker.save', identifiers)
+        self.assertNotIn('is.workflow.actions.runapplescript', identifiers)
+        self.assertIn('SharedInbox/', repr(workflow))
+
     def test_cli_default_names_preserve_mac_and_explicit_output(self):
         for arguments, expected in (
             ([], Path('dist/ConcoDispatch.unsigned.shortcut')),

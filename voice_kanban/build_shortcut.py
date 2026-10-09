@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build audio-first mobile and baseline Mac Shortcuts from inspectable source."""
+"""Build shared audio capture and legacy direct-Triage Mac Shortcuts."""
 from __future__ import annotations
 
 import argparse
@@ -140,8 +140,10 @@ def build_mac_workflow() -> dict:
 
 def write_unsigned(path: Path, *, platform: str = "mobile", queue_folder: str = QUEUE_FOLDER,
                    envelope_marker: str = ENVELOPE_MARKER, capture_mode: str = "audio") -> Path:
-    if platform not in ("mobile", "mac"):
-        raise ValueError("Platform must be mobile or mac")
+    if platform not in ("mobile", "mac", "mac-audio"):
+        raise ValueError("Platform must be mobile, mac-audio, or legacy mac")
+    if platform == 'mac-audio' and capture_mode != 'audio':
+        raise ValueError('The Mac audio path requires audio capture')
     workflow = (build_mac_workflow() if platform == "mac" else
                 build_workflow(queue_folder, envelope_marker, capture_mode))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,15 +154,16 @@ def write_unsigned(path: Path, *, platform: str = "mobile", queue_folder: str = 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--platform", choices=("mobile", "mac"), default="mobile")
+    parser.add_argument("--platform", choices=("mobile", "mac-audio", "mac"), default="mobile")
     parser.add_argument("--capture-mode", choices=("audio", "dictation"), default="audio",
-                        help="Mobile mode; Mac retains its dictation baseline")
+                        help="Mobile capture mode; mac-audio records, mac retains legacy Triage dictation")
     parser.add_argument("--queue-folder", default=os.environ.get("VOICE_KANBAN_QUEUE_FOLDER", QUEUE_FOLDER),
                         help="Literal folder relative to iCloud Drive/Shortcuts")
     parser.add_argument("--envelope-marker", default=os.environ.get("VOICE_KANBAN_ENVELOPE_MARKER", ENVELOPE_MARKER))
     parser.add_argument("--output", type=Path)
     arguments = parser.parse_args()
-    shortcut_name = "ConcoDispatch" if arguments.platform == "mobile" else "Hermes Voice Kanban Mac"
+    shortcut_name = {'mobile': 'ConcoDispatch', 'mac-audio': 'ConcoDispatch Mac',
+                     'mac': 'Hermes Voice Kanban Mac'}[arguments.platform]
     output = arguments.output or Path("dist") / f"{shortcut_name}.unsigned.shortcut"
     print(write_unsigned(output, platform=arguments.platform, queue_folder=arguments.queue_folder,
                          envelope_marker=arguments.envelope_marker, capture_mode=arguments.capture_mode))
