@@ -160,7 +160,8 @@ def main() -> int:
     parser.add_argument("--envelope-marker", default=os.environ.get("VOICE_KANBAN_ENVELOPE_MARKER", ENVELOPE_MARKER))
     parser.add_argument("--output", type=Path)
     arguments = parser.parse_args()
-    output = arguments.output or Path("dist") / f"Hermes Voice Kanban {arguments.platform.title()}.unsigned.shortcut"
+    shortcut_name = "ConcoDispatch" if arguments.platform == "mobile" else "Hermes Voice Kanban Mac"
+    output = arguments.output or Path("dist") / f"{shortcut_name}.unsigned.shortcut"
     print(write_unsigned(output, platform=arguments.platform, queue_folder=arguments.queue_folder,
                          envelope_marker=arguments.envelope_marker, capture_mode=arguments.capture_mode))
     return 0

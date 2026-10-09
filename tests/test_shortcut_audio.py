@@ -1,8 +1,23 @@
 import unittest
-from voice_kanban.build_shortcut import build_workflow
+from pathlib import Path
+from unittest.mock import patch
+from voice_kanban.build_shortcut import build_workflow, main
 
 
 class AudioShortcutTests(unittest.TestCase):
+    def test_cli_default_names_preserve_mac_and_explicit_output(self):
+        for arguments, expected in (
+            ([], Path('dist/ConcoDispatch.unsigned.shortcut')),
+            (['--platform', 'mac'], Path('dist/Hermes Voice Kanban Mac.unsigned.shortcut')),
+            (['--output', 'custom.shortcut'], Path('custom.shortcut')),
+        ):
+            with self.subTest(arguments=arguments), \
+                    patch('sys.argv', ['build_shortcut'] + arguments), \
+                    patch('voice_kanban.build_shortcut.write_unsigned') as writer, \
+                    patch('builtins.print'):
+                self.assertEqual(main(), 0)
+                self.assertEqual(writer.call_args.args[0], expected)
+
     def test_default_is_immediate_manual_stop_audio_without_live_dictation(self):
         actions = build_workflow()['WFWorkflowActions']
         identifiers = [a['WFWorkflowActionIdentifier'] for a in actions]

@@ -1,4 +1,4 @@
-# Hermes Voice Kanban
+# ConcoDispatch
 
 **Hold a phone button. Explain the task. Tap Stop. An agent starts working.**
 
@@ -78,9 +78,9 @@ Preserve an existing deployment's queue, state directory, marker, and idempotenc
 ```sh
 python3 -m voice_kanban.build_shortcut --platform mobile
 shortcuts sign --mode anyone \
-  --input 'dist/Hermes Voice Kanban Mobile.unsigned.shortcut' \
-  --output 'dist/Hermes Voice Kanban Mobile.shortcut'
-open 'dist/Hermes Voice Kanban Mobile.shortcut'
+  --input 'dist/ConcoDispatch.unsigned.shortcut' \
+  --output 'dist/ConcoDispatch.shortcut'
+open 'dist/ConcoDispatch.shortcut'
 ```
 
 The default folder is `VoiceKanbanInbox/` relative to iCloud Drive/Shortcuts. Create that folder in Files. To preserve an existing folder, pass `--queue-folder 'ExistingInbox/'` and set the matching Mac path in the receiver config.
