@@ -1,6 +1,6 @@
 # Phone acceptance test
 
-The interaction remains: hold the existing Action Button, speak, tap Stop. No separate Send step.
+Launch ConcoDispatch, speak, and tap Stop. No separate Send step. Use the Action Button if your phone has one, or another Shortcut launch option.
 
 Run these on every participating phone after its Shortcut has synced:
 
@@ -16,4 +16,4 @@ The phone's saved notification means **queued**, not received or executed. iClou
 
 If nothing arrives, do not repeat a real request immediately: first inspect the phone's saved notification, iCloud queue, receiver error, and SQLite receipt to distinguish sync delay from processing failure. Audio remains in the local archive for retry. Retrying with the same capture identity must not create a second card.
 
-Rollback: rebuild/import the mobile Shortcut with `--capture-mode dictation`, keeping the same queue folder. The audio-capable receiver accepts legacy text captures, so rolling back the capture UI does not require discarding the receipt ledger or reverting the receiver.
+For an existing installation that needs the older text workflow, see [manual setup](manual-setup.md). Preserve the Shortcut's identity and button binding when changing its actions; importing a same-named copy is not a safe in-place update. The receiver accepts legacy text captures without discarding the existing receipt ledger.
