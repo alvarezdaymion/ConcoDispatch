@@ -8,7 +8,6 @@ test:
 shortcuts:
 	$(PYTHON) -m voice_kanban.build_shortcut --platform mobile
 	$(PYTHON) -m voice_kanban.build_shortcut --platform mac-audio
-	$(PYTHON) -m voice_kanban.build_shortcut --platform mac
 
 launchagent:
 	$(PYTHON) -m voice_kanban.build_launchagent

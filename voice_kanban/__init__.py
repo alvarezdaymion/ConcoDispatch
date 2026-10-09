@@ -1,1 +1,1 @@
-"""Dictation-based Apple Shortcuts intake for Hermes Kanban."""
+"""Audio-first Apple Shortcuts intake for Hermes Kanban."""

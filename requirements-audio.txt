@@ -1,4 +1,0 @@
-# Optional local audio transcription dependency. No cloud API or credential required.
-faster-whisper==1.2.1
-# PyAV 19 changed AudioFifo's API; this version is verified with faster-whisper 1.2.1.
-av==16.1.0

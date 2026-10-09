@@ -5,6 +5,16 @@ from voice_kanban.build_shortcut import build_workflow, main
 
 
 class AudioShortcutTests(unittest.TestCase):
+    def test_removed_cli_capture_paths_are_rejected(self):
+        for arguments in (['--platform', 'mac'], ['--capture-mode', 'dictation']):
+            with self.subTest(arguments=arguments), patch('sys.argv', ['build_shortcut'] + arguments), \
+                    patch('voice_kanban.build_shortcut.write_unsigned') as writer, \
+                    patch('sys.stderr'), patch('builtins.print'):
+                with self.assertRaises(SystemExit) as error:
+                    main()
+                self.assertEqual(error.exception.code, 2)
+                writer.assert_not_called()
+
     def test_new_mac_audio_path_uses_shared_queue_not_direct_triage(self):
         import plistlib
         import tempfile
@@ -20,10 +30,10 @@ class AudioShortcutTests(unittest.TestCase):
         self.assertNotIn('is.workflow.actions.runapplescript', identifiers)
         self.assertIn('SharedInbox/', repr(workflow))
 
-    def test_cli_default_names_preserve_mac_and_explicit_output(self):
+    def test_cli_default_names_preserve_audio_shortcuts_and_explicit_output(self):
         for arguments, expected in (
             ([], Path('dist/ConcoDispatch.unsigned.shortcut')),
-            (['--platform', 'mac'], Path('dist/Hermes Voice Kanban Mac.unsigned.shortcut')),
+            (['--platform', 'mac-audio'], Path('dist/ConcoDispatch Mac.unsigned.shortcut')),
             (['--output', 'custom.shortcut'], Path('custom.shortcut')),
         ):
             with self.subTest(arguments=arguments), \
@@ -60,18 +70,23 @@ class AudioShortcutTests(unittest.TestCase):
                       if a['WFWorkflowActionParameters'].get('WFNotificationActionTitle') == 'Saved to Voice Queue')
         self.assertIn('pending', repr(queued).lower())
 
-    def test_dictation_baseline_can_still_be_rebuilt(self):
-        actions = build_workflow(capture_mode='dictation')['WFWorkflowActions']
-        self.assertEqual(actions[0]['WFWorkflowActionIdentifier'], 'is.workflow.actions.dictatetext')
-        self.assertIn('VOICEKANBAN/2', repr(actions))
+    def test_capture_identity_uses_date_and_random_number(self):
+        actions = build_workflow()['WFWorkflowActions']
+        params = {a['WFWorkflowActionIdentifier']: a['WFWorkflowActionParameters'] for a in actions}
+        random = params['is.workflow.actions.number.random']
+        self.assertEqual((random['WFRandomNumberMinimum'], random['WFRandomNumberMaximum']),
+                         (100000000, 999999999))
+        capture = params['is.workflow.actions.gettext']['WFTextActionText']['Value']
+        self.assertEqual({a['OutputName'] for a in capture['attachmentsByRange'].values()},
+                         {'Formatted Date', 'Random Number'})
 
-    def test_invalid_capture_mode_and_unsafe_queue_path_are_rejected(self):
-        for mode in ('unknown', ''):
-            with self.assertRaises(ValueError):
-                build_workflow(capture_mode=mode)
+    def test_unsafe_queue_path_and_removed_platform_are_rejected(self):
         for folder in ('../outside', '/absolute', 'a/../../b', ''):
             with self.assertRaises(ValueError):
                 build_workflow(queue_folder=folder)
+        from voice_kanban.build_shortcut import write_unsigned
+        with self.assertRaises(ValueError):
+            write_unsigned(Path('must-not-exist.shortcut'), platform='mac')
 
 
 if __name__ == '__main__':

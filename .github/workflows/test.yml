@@ -20,6 +20,3 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Synthetic tests and source rebuild (standard library only)
         run: make check
-      - name: Compile Mac AppleScript without running it
-        if: runner.os == 'macOS'
-        run: osacompile -o .local/mac_capture.scpt shortcuts/mac_capture.applescript
