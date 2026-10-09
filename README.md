@@ -15,7 +15,19 @@ Mac launchd → archive + receipts → local transcription → Hermes task + rea
 
 ## Product direction
 
-The intended end state is **clone → tell your agent “set this up” → usable voice-to-Kanban kickoff**, with only unavoidable permission/device confirmations. This revision refactors the runtime before adding that installer. Setup is still explicit; downloading the repo does not install a service or import a Shortcut.
+**Clone → tell your agent “set this up” → voice-to-Kanban kickoff**, with the remaining Apple permission and phone-button confirmations handled on your devices. Downloading the repo alone never starts a service or a worker.
+
+## Agent-led setup
+
+Clone this repository, open an agent in its directory, and say:
+
+> Set this up for voice capture into my Hermes Kanban. Read AGENTS.md, preserve any existing configuration, recordings and Shortcut bindings, and verify the receiver and worker handoff. Stop for any account-owner authentication or phone-only confirmation.
+
+The agent follows [the setup guide](docs/setup.md), using `python3 scripts/setup.py --check`, then the explicit preparation, Shortcut-import and activation steps. Preparation builds the dedicated macOS receiver app, provisions local speech assets, signs a phone Shortcut, and installs a frozen source snapshot. It does not activate intake or import Shortcuts on its own.
+
+Use your existing Apple/iCloud account and configured Hermes provider. This does not create a transcription account or configure a cloud STT fallback. If Hermes or its provider is not ready, account setup remains a separate prerequisite; the agent must not guess credentials. Existing same-named Shortcuts are preserved rather than re-imported.
+
+The commands below document the individual source components. Prefer the setup guide for a new deployment, including macOS privacy permissions.
 
 ## Included and requirements
 
@@ -88,7 +100,9 @@ On the phone, select the Shortcut under Settings → Action Button → Shortcut,
 
 ## 4. Start the launchd receiver
 
-Generate a definition only; this command does not load a service:
+For the packaged native receiver, use the setup guide's explicit activation step. macOS can deny iCloud access to a shell/Python process launched directly by launchd even when an interactive command works. The dedicated signed native app gives the receiver its own permission identity; grant access through the normal Apple prompt, not blanket Full Disk Access for a shell or Python.
+
+For advanced source-only use, generate a definition only; this command does not load a service:
 
 ```sh
 python3 -m voice_kanban.build_launchagent --runtime "$PWD"
@@ -97,7 +111,7 @@ plutil -lint dist/io.concodispatch.receiver.plist
 
 For a reviewed live revision, create the configured state directory before loading (launchd needs its log paths), copy the plist into `~/Library/LaunchAgents/`, then explicitly load it with `launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/io.concodispatch.receiver.plist"`. Use `launchctl print "gui/$(id -u)/io.concodispatch.receiver"` to inspect it and `launchctl bootout "gui/$(id -u)/io.concodispatch.receiver"` before replacing it. Keep config paths aligned; `--config`, `--state`, `--interval` and `--runtime` are generator options.
 
-Use `scripts/install_snapshot.py` to produce a commit-frozen runtime when deploying reviewed source, and point the generated service at that path. The compiled speech helper and private config stay outside the snapshot. Do not change source beneath an active receiver.
+Use `scripts/install_snapshot.py` to produce a commit-frozen runtime when deploying reviewed source, and point the generated service at that path. Pass `--app` to the generator when using a prepared native receiver app. The compiled speech helper and private config stay outside the snapshot. Do not change source beneath an active receiver.
 
 **Migration:** remove the old queue-capable Hammerspoon module from active use or reload the updated trigger-only version before starting launchd. The advisory lock is defensive protection, not a reason to keep two schedulers. Do not discard existing state. The optional legacy hold-backslash module still launches `Hermes Voice Kanban Mac`; rebuild that preserved Triage Shortcut with `--platform mac` only if needed.
 
