@@ -8,7 +8,7 @@ This repository preserves the dictation-based baseline in PR #1. Capture changes
 - Do not direct-push, force-push, merge, or enable auto-merge without the owner's explicit authorization. Keep baseline preservation separate from subsequent fixes.
 - Keep recordings, runtime state and account-bound exports out of the repository and its history.
 
-- Run `python3 -m unittest discover -s tests -v` and `make shortcuts` before reporting a change complete. Python uses only the standard library; support Python 3.9+.
+- Run `python3 -m unittest discover -s tests -v` and `make shortcuts` before reporting a change complete. Source generation and tests use the standard library; audio runtime dependencies are pinned separately in `requirements-audio.txt`. Support Python 3.9+ for the source/tests.
 - Keep tests synthetic and isolated under `.local/`. Stub Hermes rather than touching a real board, gateway, cloud queue, or notification destination.
 - Do not import Shortcuts, reload Hammerspoon, run generated AppleScript, or deploy runtime files as part of tests. Shortcuts compilation is not device execution.
 - Keep the mobile idempotency key `iphone-voice-capture:<capture_id>` stable. Archive before create; retain a changed source; retry uncertain creates with the same key.
