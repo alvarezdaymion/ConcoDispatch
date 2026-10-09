@@ -1,0 +1,33 @@
+# Local configuration and runtime data
+.local/
+.env
+.env.*
+!.env.example
+config.sh
+*.local.sh
+recordings/
+archive/
+queue/
+*.sqlite
+*.sqlite3
+*.sqlite*
+*.db
+*.db-*
+*.log
+*.jsonl
+*.m4a
+*.wav
+*.mp3
+*.aac
+*.caf
+
+# Rebuildable products and developer caches
+dist/
+*.shortcut
+*.scpt
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
