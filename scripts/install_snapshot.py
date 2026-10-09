@@ -12,8 +12,8 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DIRECTORIES = ('voice_kanban/', 'native/', 'scripts/')
-FILES = {'config.example.sh'}
+FILES = {'voice_kanban/__init__.py', 'voice_kanban/consumer.py',
+         'voice_kanban/transcribe.py', 'scripts/consume.sh'}
 
 
 def git(repo: Path, *args: str) -> bytes:
@@ -36,7 +36,7 @@ def install_snapshot(repo: Path, destination: Path) -> Path:
             continue
         metadata, raw_name = entry.split(b'\t', 1)
         name = raw_name.decode()
-        if name not in FILES and not name.startswith(DIRECTORIES):
+        if name not in FILES:
             continue
         if metadata.split()[0] != b'100644' and metadata.split()[0] != b'100755':
             raise RuntimeError('Runtime source must consist of regular tracked files')

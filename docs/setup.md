@@ -32,6 +32,8 @@ Use `--hermes-bin` with the absolute installed CLI path when it is not at the de
 
 Source must be a clean committed revision. For development, prepare only an isolated committed fixture or candidate clone, not a mutable checkout. Native assets can require network access during this explicit preparation step; normal transcription never downloads them.
 
+The installer generates private `config.sh`; there is no separate example configuration to copy. It installs only the consumer, transcription adapter, package marker and shell wrapper in the commit-frozen runtime, plus `SOURCE.json` recording source identity and hashes. Setup tools, builders and tests remain in the repository. Swift inputs are read from that same Git commit into temporary build files, compiled, then discarded. Keep installed snapshots unedited, including bytecode caches; reuse verifies their complete path set and hashes rather than overwriting them.
+
 Local app signing does not require an Apple developer account. The optional signing-identity flag supports an existing local signing identity. A changed app signature can require renewed OS consent on an upgrade; never defeat that protection.
 
 ### Existing installations
@@ -87,7 +89,7 @@ Test each phone after its Shortcut has synced:
 - Start with a short, harmless request. Tap Stop and confirm one task contains the full transcript and the worker's acknowledgment.
 - Record for several minutes with a thinking pause and distinct opening/closing phrases. Recording must continue until Stop, and both phrases must reach the task.
 - Check locked-phone launching separately. A working unlocked test does not prove locked-device permissions.
-- If nothing arrives, inspect sync, receiver logs and the receipt before repeating the request. Do not reset receipts to force delivery; [recovery details](design.md#recovery-boundaries) explain the retained state.
+- If nothing arrives, inspect sync, receiver logs and the receipt before repeating the request. Do not reset receipts to force delivery; see [recovery](#troubleshooting-and-recovery) below.
 
 A clean clone plus isolated output home proves packaging without old config, not a second Apple account, a fresh Mac, or new phone consent. Synthetic recordings do not prove phone microphone capture or phone-side sync.
 
@@ -102,3 +104,22 @@ open 'dist/ConcoDispatch Mac.shortcut'
 ```
 
 Use the actual configured queue folder if it differs. Preserve an existing Shortcut's identity instead of importing a duplicate. Launch it from Shortcuts or assign a native keyboard/menu-bar gesture; no separate scheduler is needed.
+
+## Troubleshooting and recovery
+
+Inspect `receiver.log`, `receiver-error.log`, `receipts.sqlite3`, and `archive/` under the configured `VOICE_KANBAN_STATE_DIR`. Keep their contents private. If delivery is missing, first establish whether the recording synced, was archived, was transcribed, and has a confirmed task.
+
+- **No synced recording:** check iCloud/Shortcuts sync and the exact queue folder. Keep the Mac awake and logged in. A partially synced file or saved notification is not delivery proof.
+- **Archived but not delivered:** fix the recorded error, unavailable helper/assets or stopped gateway. Pending audio can retry from its archive even if the queue file disappeared. Recognition and CLI calls have deadlines; uncertain creates retain the same capture identity and cached transcript.
+- **Missing or changed transcript:** restore its verified original under `archive/.transcripts/`. Never edit it after task creation, clear a pinned digest or retranscribe an uncertain create. Compare the task body and receipt before restoring anything.
+- **Collision or interrupted cleanup:** never overwrite an archive, rename a capture to force a new identity, or delete receipts. Inspect hidden `.cleanup-*` queue directories after a crash; retained files require manual comparison with the archive and receipt before restoring them. Do not overwrite a newer arrival.
+- **Older installations:** preserve original profile/board settings during the first upgraded pass, existing text markers and ledgers. Old orphaned text captures need their original queue source restored. Flat legacy transcript caches require verified provenance; an unrelated file is not a recovery transcript. Do not reset state to bypass migration checks.
+- **Optional notifications:** intake confirmation and message delivery are separate. An uncertain send may repeat a message; enabling a destination can send historical confirmations containing transcript summaries. Inspect that scope before enabling it.
+
+Recordings and transcripts are retained indefinitely; there is no automatic purge. Hermes retry identities reduce duplicates, but do not guarantee exactly-once execution across archived/deleted tasks or externally edited cards. Back up config, archives and receipts before maintenance and preserve the previous working installation for rollback.
+
+## Developer verification
+
+Run `make check` for isolated tests, source generation and shell syntax; generated configuration is syntax-checked in the setup tests. On a compatible Mac, `make native` compiles both Swift executables. Canonical tests do not download assets, import Shortcuts, activate services or touch live boards/queues.
+
+The opt-in `scripts/test_audio_integration.py` harness checks real local transcription, exact task-body readback and duplicate-free replay on an isolated Hermes board; use `--help` for its required synthetic-audio, helper, CLI and expected-phrase arguments. Prepare/check speech assets at the final helper path first. `NATIVE_SPEECH_PROOF=1 python3 -m unittest discover -s tests -p test_native_speech.py -v` generates a synthetic long recording using `say` and ffmpeg. Neither check proves physical-phone capture, iCloud sync, scheduled permissions or automatic worker execution.

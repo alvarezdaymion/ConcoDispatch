@@ -74,6 +74,19 @@ class SnapshotInstallTests(unittest.TestCase):
             (repo / 'voice_kanban').mkdir()
             (repo / 'voice_kanban/consumer.py').write_text('print("synthetic")\n')
             (repo / '.gitignore').write_text('.local/\n')
+            runtime_files = {'voice_kanban/__init__.py', 'voice_kanban/consumer.py',
+                             'voice_kanban/transcribe.py', 'scripts/consume.sh'}
+            for name in runtime_files - {'voice_kanban/consumer.py'}:
+                target = repo / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((ROOT / name).read_bytes())
+            for name in ('scripts/setup.py', 'scripts/install_snapshot.py',
+                         'scripts/test_audio_integration.py', 'voice_kanban/build_shortcut.py',
+                         'voice_kanban/build_launchagent.py', 'native/receiver.swift',
+                         'native/transcribe.swift', 'config.example.sh'):
+                target = repo / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text('build/test-only fixture\n')
             git('add', '.')
             git('commit', '-qm', 'Synthetic fixture')
             (repo / '.local').mkdir()
@@ -83,6 +96,7 @@ class SnapshotInstallTests(unittest.TestCase):
             manifest = json.loads((installed / 'SOURCE.json').read_text())
             self.assertEqual(installed.name, revision)
             self.assertEqual(manifest['commit'], revision)
+            self.assertEqual(set(manifest['sha256']), runtime_files)
             self.assertEqual((installed / 'voice_kanban/consumer.py').read_text(), 'print("synthetic")\n')
             self.assertFalse((installed / '.local').exists())
             self.assertEqual(install_snapshot(repo, Path(tmp) / 'runtimes'), installed)
