@@ -20,6 +20,8 @@ queue/
 *.mp3
 *.aac
 *.caf
+*.aiff
+*.aif
 
 # Rebuildable products and developer caches
 dist/

@@ -1,88 +1,102 @@
-# Hermes Voice Kanban
+# ConcoDispatch
 
-Turn a spoken note into a Hermes Kanban card using Apple Shortcuts, iCloud Drive, and a small standard-library Python consumer.
+**Hold a phone button. Explain the task. Tap Stop. An agent starts working.**
 
-**iPhone:** hold the Action Button → dictate → tap **Stop** → save a text capture to iCloud → the awake Mac imports it into Kanban. The phone says **queued**, not delivered.
+A small iPhone-to-Mac bridge for [Hermes Agent Kanban](https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban). It keeps task capture simple while preserving the context in a long spoken explanation.
 
-**Mac:** hold `\` for 0.35 seconds → dictate → tap `\` again (or click **Stop**) → create a Triage card directly. A short tap still types `\` normally. Releasing the initial hold does not stop dictation.
+```text
+iPhone Action Button → Record Audio → Stop → iCloud queue
+                                                ↓
+Mac: archive audio → local transcription → full task body → Hermes Kanban
+```
 
-This repository preserves a working dictation-based design, including its limitations. It does **not** record audio or add a separate transcription service.
+The Mac also retains the original hold-backslash dictation shortcut. This change targets the phone capture path, not the Mac interaction.
+
+## Why audio first?
+
+The original workflow used Apple's **Dictate Text** action. Even with Stop Listening set to **On Tap**, live dictation can end before the speaker is finished. Audio-first capture separates recording from recognition: the operator decides when to stop, then the Mac transcribes the saved file.
+
+No file picker, transcript review, or separate Send step. No silence-based submission. No cloud transcription credential or per-minute API bill. Recordings are handled by Apple's iCloud handoff, then archived and transcribed locally on the Mac.
+
+## Included
+
+- Rebuildable mobile Shortcut: immediate recording, manual Stop, unique capture filename, literal iCloud folder.
+- The original dictation baseline, preserved by PR #1 and still rebuildable using `--capture-mode dictation`.
+- Python receiver: local archival, SQLite receipts, stable Hermes idempotency keys, legacy text support.
+- Local English transcription using `faster-whisper` and a provisioned `base.en` model. Normal processing does not download a model or fall back to a cloud provider.
+- Mac Shortcut source and Hammerspoon hold-backslash trigger, with phone-queue polling every 15 seconds.
+- Synthetic regression tests and CI on Linux and macOS.
+
+Generated Shortcuts, recordings, receipts, private settings, and account-bound exports are excluded from Git.
 
 ## Requirements
 
-- iPhone with Shortcuts and an Action Button (or launch the mobile Shortcut manually).
-- Mac with Shortcuts, Python 3.9+, and [Hammerspoon](https://www.hammerspoon.org/). Grant Hammerspoon Accessibility permission; grant Shortcuts microphone/speech permissions and allow running scripts on Mac.
-- The same Apple account with **iCloud Drive and Shortcuts sync enabled** on both devices. Keep the queue downloaded on the Mac. The Mac must be awake, logged in, and running Hammerspoon for polling.
-- [Hermes Agent](https://hermes-agent.nousresearch.com/docs/) installed with Kanban available and a configured **default** profile. For automatic card execution, the Hermes gateway/Kanban dispatcher must be running. Mobile cards are assigned to `default`; Mac cards enter Triage and follow your board's routing policy.
-- A Hermes CLI supporting `kanban create --assignee`, `--triage`, `--created-by`, `--idempotency-key`, and `--json`. Check `hermes kanban create --help` before installing. Optional notifications also require a configured `hermes send --to` destination.
+- An iPhone with Shortcuts and a supported Action Button, or another existing Shortcut launch gesture.
+- The same Apple account, with iCloud Drive and Shortcuts sync enabled on the phone and Mac.
+- A Mac that stays awake, logged in, and online while receiving tasks.
+- Hammerspoon with the necessary macOS accessibility permissions.
+- Hermes Agent with Kanban, its gateway dispatcher, and a configured `default` profile. Mobile captures route to `default`; the preserved Mac path creates Triage cards.
+- Python 3.9+ for source generation/tests; Python 3.12 recommended for the optional transcription environment.
 
-No Python dependencies or service credentials are required by this package. Hermes itself needs its normal configuration.
+Microphone permissions, locked-phone launch, synchronization, and long recording behavior must be checked on each physical phone. A generated Shortcut is not proof of those conditions.
 
-## 1. Rebuild and import the Shortcuts
+## 1. Set up local transcription
 
-Run from the repository root:
-
-```sh
-python3 -m unittest discover -s tests -v
-make shortcuts
-```
-
-This generates unsigned binary plists under ignored `dist/`. The builder is the source of truth; no signed Shortcuts or account-bound export metadata belong in Git.
-
-On Mac, sign the generated files locally before importing them:
+Clone to a durable location such as `~/src/hermes-voice-kanban`, then:
 
 ```sh
-shortcuts sign --mode anyone \
-  --input "dist/Hermes Voice Kanban Mobile.unsigned.shortcut" \
-  --output "dist/Hermes Voice Kanban Mobile.shortcut"
-shortcuts sign --mode anyone \
-  --input "dist/Hermes Voice Kanban Mac.unsigned.shortcut" \
-  --output "dist/Hermes Voice Kanban Mac.shortcut"
-open "dist/Hermes Voice Kanban Mobile.shortcut"
-open "dist/Hermes Voice Kanban Mac.shortcut"
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-audio.txt
 ```
 
-Signing requires Apple's local Shortcuts signing support and may require network access. These commands only prepare artifacts; review the actions in Shortcuts before running them. Name the imported workflows **Hermes Voice Kanban Mobile** and **Hermes Voice Kanban Mac**. If macOS won't import a rebuilt workflow, create its actions manually using [the source map](docs/design.md#shortcut-source-map).
-
-In Files, create **iCloud Drive → Shortcuts → VoiceKanbanInbox**. Verify the mobile **Save File** action points to that folder, has **Ask Where to Save off**, and **Overwrite off**. Let the mobile Shortcut sync to iPhone, then select it in **Settings → Action Button → Shortcut**. Run it manually once to approve permissions.
-
-## 2. Configure the Mac consumer
-
-Keep this checkout in a stable location. For the examples below, use `~/src/hermes-voice-kanban`, or change the local `repo` setting in the next step.
+Provision the model once, deliberately allowing its public download during setup:
 
 ```sh
-mkdir -p "$HOME/Library/Application Support/Hermes Voice Kanban"
-cp config.example.sh "$HOME/Library/Application Support/Hermes Voice Kanban/config.sh"
+.venv/bin/python -c 'from faster_whisper import WhisperModel; WhisperModel("base.en", device="cpu", compute_type="int8", local_files_only=False)'
 ```
 
-Edit that private file if needed. Set an absolute `VOICE_KANBAN_HERMES_BIN` when GUI applications cannot find Hermes on `PATH`. Use `command -v hermes` in your terminal to locate it. The Mac AppleScript and queue launcher both read this default config file. It is trusted shell code, not a dotenv parser.
+Normal processing uses `local_files_only=True`. A missing dependency/model is a recoverable error, not permission to upload a recording elsewhere.
 
-| Variable | Default / meaning |
+## 2. Configure the queue
+
+Create `~/Library/Application Support/Hermes Voice Kanban/config.sh` from `config.example.sh`. It is trusted shell code; keep it private.
+
+| Setting | Meaning |
 | --- | --- |
-| `VOICE_KANBAN_HERMES_BIN` | `hermes` found on `PATH`, otherwise `~/.hermes/hermes-agent/venv/bin/hermes` |
-| `VOICE_KANBAN_QUEUE_DIR` | Mac path for iCloud Drive/Shortcuts/VoiceKanbanInbox (`~/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents/VoiceKanbanInbox`) |
-| `VOICE_KANBAN_STATE_DIR` | `~/Library/Application Support/Hermes Voice Kanban` (archive and SQLite receipts) |
-| `VOICE_KANBAN_ENVELOPE_MARKER` | `VOICEKANBAN/2`; must match the mobile build |
-| `VOICE_KANBAN_NOTIFY_TARGET` | Empty; no outbound receipts unless explicitly configured |
-| `VOICE_KANBAN_PYTHON` | `python3`, used by the shell launcher |
-| `VOICE_KANBAN_CONFIG` | Optional alternate config file for the shell launcher only |
+| `VOICE_KANBAN_PYTHON` | Absolute path to the transcription environment's Python |
+| `VOICE_KANBAN_QUEUE_DIR` | Mac's iCloud Drive/Shortcuts queue path |
+| `VOICE_KANBAN_STATE_DIR` | Local audio archive and SQLite receipt directory |
+| `VOICE_KANBAN_ENVELOPE_MARKER` | Marker for legacy text captures; default `VOICEKANBAN/2` |
+| `VOICE_KANBAN_HERMES_BIN` | Optional explicit CLI path; otherwise PATH or the standard home install |
+| `VOICE_KANBAN_NOTIFY_TARGET` | Optional receipt destination; empty disables sends |
+| `VOICE_KANBAN_CONFIG` | Optional alternate shell config path |
 
-The builder accepts `--queue-folder` (relative to iCloud Drive/Shortcuts) and `--envelope-marker`. For example:
+Preserve an existing deployment's queue, state directory, marker, and idempotency records. Do not reset its ledger to install an update.
+
+## 3. Build and import the mobile Shortcut
 
 ```sh
-python3 -m voice_kanban.build_shortcut --platform mobile \
-  --queue-folder 'LocalInbox/' --envelope-marker 'LOCALVOICE/2'
+python3 -m voice_kanban.build_shortcut --platform mobile
+shortcuts sign --mode anyone \
+  --input 'dist/ConcoDispatch.unsigned.shortcut' \
+  --output 'dist/ConcoDispatch.shortcut'
+open 'dist/ConcoDispatch.shortcut'
 ```
 
-Set the consumer's absolute queue path and marker to match. Changing a marker on a nonempty queue can turn an envelope into legacy plain text; drain the old queue first or preserve its existing marker locally. Do not change the receipt state directory casually: it carries deduplication history.
+The default folder is `VoiceKanbanInbox/` relative to iCloud Drive/Shortcuts. Create that folder in Files. To preserve an existing folder, pass `--queue-folder 'ExistingInbox/'` and set the matching Mac path in the receiver config.
 
-`/bin/sh scripts/consume.sh` performs **one real import pass** using the config file. `python3 -m voice_kanban.consumer` also performs one pass, but reads only exported environment variables. Do not run either against a real queue as a syntax check.
+For a new installation, select the imported Shortcut under Settings → Action Button → Shortcut. For an update, preserve the existing Shortcut identity: a same-named import may create a duplicate rather than update a phone's button reference. Update its existing action chain through Shortcuts if needed. Never edit Apple's Shortcuts database directly.
 
-## 3. Enable the hotkey and polling
+The first action must render as **Record Audio**, **Start Recording: Immediately**, **Finish Recording: On Tap**. Stop submits automatically. Run manually once to approve permissions, then test the normal button flow.
 
-Add this to your existing `~/.hammerspoon/init.lua` without replacing unrelated configuration:
+## 4. Start the receiver
+
+`/bin/sh scripts/consume.sh` performs one configured import pass. It can create real tasks; do not point a test configuration at a real queue. `python3 -m voice_kanban.consumer` reads exported environment variables rather than sourcing the shell config.
+
+For polling and the preserved Mac trigger, load the module once from `~/.hammerspoon/init.lua`, preserving unrelated configuration:
 
 ```lua
+require("hs.ipc")
 local repo = os.getenv("HOME") .. "/src/hermes-voice-kanban"
 voiceKanban = dofile(repo .. "/hammerspoon/voice_kanban.lua").start({
     repo = repo,
@@ -90,24 +104,28 @@ voiceKanban = dofile(repo .. "/hammerspoon/voice_kanban.lua").start({
 })
 ```
 
-Reload Hammerspoon once. This enables login autostart, the hold-backslash hotkey, one immediate queue pass, and polling every **15 seconds**. It does not launch overlapping queue consumers within that Hammerspoon instance. Do not enable a second poller or manually import concurrently. Optional settings: `holdSeconds`, `queueIntervalSeconds`, and `shortcutsCLI`.
+Reload Hammerspoon. It runs an immediate queue pass and checks every 15 seconds, without overlapping its own passes. Use a reviewed, frozen source revision for live validation; do not change source beneath an active receiver.
 
-## Check the installed flow
+Rebuild the unchanged Mac Shortcut with `--platform mac`, then sign/import it as above. A normal backslash tap stays a typed backslash; holding starts Mac dictation; tapping again presses Stop.
 
-1. Dictate a harmless synthetic note on iPhone and tap Stop. Verify the queued notification and the named `.txt` file, if it hasn't already been consumed.
-2. With the Mac awake, wait for iCloud sync and a polling pass. Verify the exact card on your Hermes board; then verify the source file disappeared and its archive exists under the state directory.
-3. Test a short `\` tap, hold-to-dictate, and second-tap-to-stop on Mac. Verify its card is in Triage. If the accessibility Stop lookup fails, click Stop yourself.
-4. Only if you enabled a notification target, verify its receipt separately. A local Shortcut notification does not prove delivery or task execution.
+## Delivery and recovery
 
-Tests use synthetic files and a fake Hermes executable; they never call your gateway or touch your board. CI rebuilds both workflows and compiles AppleScript on Mac, but cannot prove phone permissions, actual dictation, iCloud sync, or GUI accessibility behavior.
+The phone's saved notification means **queued**, not delivered. iCloud has variable sync latency. The Mac must be awake and online with Hammerspoon and the Hermes gateway running.
 
-## Known limitations
+The receiver archives audio before transcription or task creation. Full audio transcripts go into the task body, with a short board title. Failures retain the source and archive for retry; original recordings remain locally archived without an automatic purge. Replays reuse the capture identity rather than intentionally launching duplicate work.
 
-- **Apple Dictate Text can time out during longer notes even with “On Tap.”** There is no audio backup. Keep captures short and verify important notes; long-form reliability is not fixed in this baseline.
-- iCloud is asynchronous. Fifteen-second polling is not a delivery SLA; a sleeping Mac does not consume the queue.
-- Mac capture creates a Triage card directly and has no durable mobile queue or replay key. The two paths intentionally have different routing and recovery behavior.
-- Stop-button lookup uses English accessibility labels. Other languages or changed Apple UI may require manual Stop.
-- Retry safety relies on Hermes honoring the idempotency key. Notification retries can duplicate a receipt if a send succeeded but its response was lost. There is no subprocess timeout or cross-process consumer lock.
-- Queue files, archives, and receipts contain private text. Keep them out of Git and restrict access. Optional receipts send a short transcript summary to your configured destination.
+Do not immediately repeat an important request because a card has not appeared. First inspect the queue, receipt, archive, and error to distinguish sync delay from processing failure. See [design and recovery](docs/design.md) and the [both-phone acceptance checklist](docs/phone-tests.md).
 
-See [design and recovery behavior](docs/design.md) for the envelope, receipt state, and retained failure cases.
+## Tests and limits
+
+```sh
+make check
+```
+
+The standard-library suite uses synthetic fixtures and mocked subprocesses. It does not contact a live board, record a microphone, or validate iCloud. Use synthetic audio and an isolated Hermes board for local end-to-end checks. Physical phone tests are a separate final gate.
+
+This is not a guaranteed delivery service. A sleeping Mac cannot receive; iCloud can delay; local transcription is imperfect. English `base.en` is the initial model. The unchanged Mac dictation path still has its original timeout and weaker recovery properties. Optional receipt sends can duplicate after an uncertain response, and contain a short transcript summary; enable them deliberately.
+
+## Portfolio and demonstration
+
+The project demonstrates a minimal interface backed by durable automation, not guaranteed iCloud delivery. [Demo notes](docs/demo.md) describe the problem, system, and evidence to capture. Use synthetic recordings and boards, review source/history, and obtain publication approval before making the repository or a video public.
