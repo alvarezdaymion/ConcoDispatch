@@ -6,10 +6,10 @@ A physical phone button turns a spoken explanation into an actionable agent task
 
 ## Story spine
 
-1. Show the interaction: hold the button, speak naturally, tap Stop, then show the resulting task after delivery.
-2. Explain the failure: live dictation can end while the person is still giving context.
-3. Show the audio-first workflow: record until Stop, save to the queue, then transcribe locally.
-4. Reveal the necessary reliability behind the simple interface: unique capture identity, local audio archive, persistent receipts, retry-safe creation, and full context in the task body.
+1. Show the interaction: launch the Shortcut, speak naturally, tap Stop, then show the resulting task after delivery.
+2. Explain why you'd use it: give your agent a task while away from your desk, without typing or copying a voice note into chat.
+3. Show that you can explain the full thought and pause to think. Recording ends when you tap Stop.
+4. Show the result: Hermes receives the full transcript and its configured worker starts the task.
 5. Demonstrate a long explanation with a thinking pause and a clearly spoken final instruction. Show that the final instruction reaches the card and the agent.
 6. Explain the honest limits: variable iCloud sync, an awake Mac, physical-device permissions, and imperfect transcription.
 

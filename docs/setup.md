@@ -44,7 +44,7 @@ launchctl bootout "gui/$(id -u)/io.concodispatch.receiver"
 
 Prepare the new version, then activate explicitly. Preserve the previous app, definition and helper as rollback material before an upgrade; retain all source snapshots and the existing config/state. If preparation fails, do not activate incomplete files: restore the previous binaries/definition and bootstrap the previous service. Never kill unrelated apps/services or discard receipts to make setup pass.
 
-Automatic preparation supports explicitly configured Apple speech installations only. Whisper remains available through the manual README path. Existing speech helper bytes are reused, not upgraded automatically. Older/unrecognized service definitions require manual migration. The queue must be a subfolder of the Shortcuts iCloud workflow container. Changing settings or signing identity for an existing commit build requires manual review; setup refuses to overwrite that build.
+Automatic preparation supports explicitly configured Apple speech installations only. Whisper remains available through [manual setup](manual-setup.md). Existing speech helper bytes are reused, not upgraded automatically. Older/unrecognized service definitions require manual migration. The queue must be a subfolder of the Shortcuts iCloud workflow container. Changing settings or signing identity for an existing commit build requires manual review; setup refuses to overwrite that build.
 
 Disable an old Hammerspoon queue scheduler separately before activation. Do not remove unrelated hotkeys or change its login settings. The advisory receipt lock is a safety net, not permission to keep competing schedulers.
 
