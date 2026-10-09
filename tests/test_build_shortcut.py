@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ShortcutBuilderTests(unittest.TestCase):
     def test_capture_id_embedded_in_envelope_and_filename_before_literal_folder_save(self):
-        actions = build_workflow()["WFWorkflowActions"]
+        actions = build_workflow(capture_mode="dictation")["WFWorkflowActions"]
         params = lambda name: next(a["WFWorkflowActionParameters"] for a in actions
                                   if a["WFWorkflowActionIdentifier"] == "is.workflow.actions." + name)
         texts = {a["WFWorkflowActionParameters"].get("CustomOutputName"): a["WFWorkflowActionParameters"]
@@ -44,7 +44,7 @@ class ShortcutBuilderTests(unittest.TestCase):
         self.assertNotIn("Telegram", repr(notification))
 
     def test_mobile_builder_allows_local_folder_and_marker(self):
-        workflow = build_workflow(queue_folder="LocalInbox/", envelope_marker="LOCALVOICE/2")
+        workflow = build_workflow(queue_folder="LocalInbox/", envelope_marker="LOCALVOICE/2", capture_mode="dictation")
         content = repr(workflow)
         self.assertIn("LocalInbox/", content)
         self.assertIn("LOCALVOICE/2", content)
