@@ -18,4 +18,4 @@ native:
 	xcrun swiftc -parse-as-library -O -module-cache-path .local/swift-module-cache native/receiver.swift -o dist/ConcoDispatchReceiver
 
 check: test shortcuts launchagent
-	/bin/sh -n scripts/consume.sh config.example.sh
+	/bin/sh -n scripts/consume.sh

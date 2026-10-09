@@ -15,6 +15,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SetupTests(unittest.TestCase):
+    def test_native_build_uses_committed_inputs_without_deploying_sources(self):
+        self.platform_fixture()
+        inputs = []
+        def inspect_build(command, home, timeout=60):
+            if 'swiftc' in command:
+                source = next(Path(arg) for arg in command if str(arg).endswith('.swift'))
+                (self.repo / 'native' / source.name).write_text('changed after preflight\n')
+                self.assertTrue(source.is_file(), 'Compiler input was omitted from the runtime')
+                self.assertEqual(source.read_bytes(), b'# synthetic source\n')
+                inputs.append(source.name)
+            return self.fake_run(command, home, timeout)
+        with patch.object(self.setup, 'run', side_effect=inspect_build):
+            code, output = self.invoke('--prepare')
+        self.assertEqual(code, 0, output)
+        self.assertEqual(inputs, ['receiver.swift', 'transcribe.swift'])
+        self.assertFalse(list(self.state.rglob('*.swift')))
+
     def test_preparation_cannot_enable_intake_at_next_login(self):
         self.platform_fixture()
         self.assertEqual(self.invoke('--prepare')[0], 0)
@@ -169,7 +186,7 @@ class SetupTests(unittest.TestCase):
         helper.chmod(0o700)
         self.assertEqual(self.invoke()[0], 0)
         self.assertEqual(helper.read_bytes(), b'existing trusted helper')
-        self.assertFalse(any('native/transcribe.swift' in ' '.join(c) for c in self.calls))
+        self.assertFalse(any(Path(arg).name == 'transcribe.swift' for c in self.calls for arg in c))
 
     def test_unexported_config_setting_is_rejected(self):
         self.platform_fixture()
@@ -300,6 +317,7 @@ class SetupTests(unittest.TestCase):
         self.assertIn(b"VOICE_KANBAN_STT_BACKEND=apple", config)
         self.assertIn(b"VOICE_KANBAN_PROFILE=default", config)
         self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
+        subprocess.run(['/bin/sh', '-n', str(self.config)], check=True)
         plist = self.state / 'receiver.plist'
         definition = plistlib.loads(plist.read_bytes())
         self.assertEqual(definition['ProgramArguments'][:4], ['/usr/bin/open', '-W', '-g', '-a'])

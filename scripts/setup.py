@@ -224,8 +224,11 @@ def prepare(args, home, config, cloud, values, queue):
                 executable = staged_app / 'Contents/MacOS/ConcoDispatchReceiver'
                 executable.parent.mkdir(parents=True)
                 (staged_app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+                source = stage / 'receiver.swift'
+                source.write_bytes(git(ROOT, 'show', commit + ':native/receiver.swift'))
                 require(['/usr/bin/xcrun', 'swiftc', '-parse-as-library', '-O', '-module-cache-path',
-                         stage / 'cache', runtime / 'native/receiver.swift', '-o', executable], home, 300)
+                         stage / 'cache', source, '-o', executable], home, 300)
+                source.unlink()
                 require(['/usr/bin/codesign', '--force', '--sign', args.signing_identity or '-', staged_app], home)
                 require(['/usr/bin/codesign', '--verify', '--strict', staged_app], home)
                 unsigned = write_unsigned(stage / 'ConcoDispatch.unsigned.shortcut', queue_folder=queue)
@@ -235,8 +238,11 @@ def prepare(args, home, config, cloud, values, queue):
                     raise RuntimeError('Shortcuts signing produced no signed artifact')
             if not helper.exists():
                 binary = stage / 'transcribe'
+                source = stage / 'transcribe.swift'
+                source.write_bytes(git(ROOT, 'show', commit + ':native/transcribe.swift'))
                 require(['/usr/bin/xcrun', 'swiftc', '-parse-as-library', '-O', '-module-cache-path',
-                         stage / 'cache', runtime / 'native/transcribe.swift', '-o', binary], home, 300)
+                         stage / 'cache', source, '-o', binary], home, 300)
+                source.unlink()
                 helper.parent.mkdir(parents=True, exist_ok=True)
                 with binary.open('rb') as source, helper.open('xb') as target:
                     shutil.copyfileobj(source, target)
