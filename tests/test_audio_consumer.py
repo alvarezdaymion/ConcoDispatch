@@ -18,6 +18,51 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AudioConsumerTests(unittest.TestCase):
+    def test_bad_saved_routing_does_not_block_healthy_capture(self):
+        self.run_consumer(expected=1, hermes=lambda args: (_ for _ in ()).throw(consumer.CaptureError('lost response')))
+        for index, encoded in enumerate(('[]', '{}', '{"board":1,"profile":"","assignee":"default"}')):
+            with self.subTest(encoded=encoded):
+                with sqlite3.connect(self.db_path) as db:
+                    db.execute('UPDATE captures SET routing_json = ? WHERE capture_id = ?', (encoded, self.capture_id))
+                healthy = self.queue / f'capture-healthy-routing-{index:04d}.m4a'
+                healthy.write_bytes(self.payload)
+                self.run_consumer(expected=1, transcriber=lambda path: self.transcript)
+                self.assertTrue(self.source.exists())
+                self.assertFalse(healthy.exists())
+
+    def test_optional_sends_follow_all_capture_delivery(self):
+        second = self.queue / 'capture-second-audio-0002.m4a'
+        second.write_bytes(self.payload)
+        def send(*args, **kwargs):
+            self.assertFalse(self.source.exists())
+            self.assertFalse(second.exists())
+            raise consumer.CaptureError('synthetic message timeout')
+        with patch.object(consumer, 'NOTIFY_TARGET', 'synthetic-target'), patch.object(consumer, 'notify', side_effect=send) as notify:
+            self.run_consumer(expected=1, transcriber=lambda path: self.transcript)
+        self.assertEqual(notify.call_count, 2)
+        self.assertEqual(self.receipt('COUNT(*)'), (2,))
+
+    def test_retry_pins_board_profile_and_assignee_from_original_capture(self):
+        attempts = []
+        def first(args):
+            attempts.append(args)
+            raise consumer.CaptureError('synthetic lost response')
+        with patch.object(consumer, 'BOARD', 'synthetic-board'), patch.object(consumer, 'PROFILE', 'synthetic-profile'), \
+                patch.object(consumer, 'ASSIGNEE', 'synthetic-worker'):
+            self.run_consumer(expected=1, hermes=first)
+        def retry(args):
+            attempts.append(args)
+            self.assertEqual(args[:6], ['synthetic-hermes', '--profile', 'synthetic-profile', 'kanban', '--board', 'synthetic-board'])
+            if 'create' in args:
+                self.assertEqual(args[args.index('--assignee') + 1], 'synthetic-worker')
+                return {'id': 't_synthetic_route'}
+            return {'task': {'id': 't_synthetic_route', 'body': self.transcript}}
+        with patch.object(consumer, 'BOARD', 'changed-board'), patch.object(consumer, 'PROFILE', 'changed-profile'), \
+                patch.object(consumer, 'ASSIGNEE', 'changed-worker'):
+            self.run_consumer(hermes=retry)
+        self.assertEqual(attempts[0], attempts[1])
+        self.assertFalse(self.source.exists())
+
     def setUp(self):
         scratch = ROOT / ".local"
         scratch.mkdir(exist_ok=True)
@@ -31,7 +76,8 @@ class AudioConsumerTests(unittest.TestCase):
         self.db_path = self.state / "receipts.sqlite3"
         for name, value in dict(QUEUE_DIR=self.queue, STATE_DIR=self.state,
                                 ARCHIVE_DIR=self.archive, DATABASE_PATH=self.db_path,
-                                NOTIFY_TARGET="", HERMES="synthetic-hermes").items():
+                                NOTIFY_TARGET="", HERMES="synthetic-hermes",
+                                BOARD='', PROFILE='', ASSIGNEE='default').items():
             patcher = patch.object(consumer, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)

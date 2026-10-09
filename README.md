@@ -1,67 +1,51 @@
 # ConcoDispatch
 
-**Hold a phone button. Explain the task. Tap Stop to queue it for an agent.**
+**Launch. Explain the task. Tap Stop. An agent gets the complete recording as a task.**
 
-A small iPhone-to-Mac bridge for [Hermes Agent Kanban](https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban). It keeps task capture simple while preserving the context in a long spoken explanation.
+A small Apple Shortcuts bridge for [Hermes Agent Kanban](https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban). Record first, transcribe locally, then submit the full transcript through a durable receiver.
 
 ```text
-iPhone Action Button → Record Audio → Stop → iCloud queue
-                                                ↓
-Mac: archive audio → local transcription → full task body → Hermes Kanban
+iPhone Action Button ─┐
+Mac native Shortcut ──┴→ Record Audio → Stop → iCloud queue
+                                                  ↓
+Mac launchd → archive + receipts → local transcription → Hermes task + readback
 ```
 
-The Mac also supports a hold-backslash dictation shortcut that creates a Triage card directly.
+**No Hammerspoon requirement. No transcription account or per-minute API bill.** The default phone handoff uses the user's existing Apple account; task execution uses their existing configured Hermes agent/provider. Audio is retained locally for recovery.
 
-## Why audio first?
+## Product direction
 
-The original workflow used Apple's **Dictate Text** action. Even with Stop Listening set to **On Tap**, live dictation can end before the speaker is finished. Audio-first capture separates recording from recognition: the operator decides when to stop, then the Mac transcribes the saved file.
+The intended end state is **clone → tell your agent “set this up” → usable voice-to-Kanban kickoff**, with only unavoidable permission/device confirmations. This revision refactors the runtime before adding that installer. Setup is still explicit; downloading the repo does not install a service or import a Shortcut.
 
-No file picker, transcript review, or separate Send step. No silence-based submission. No cloud transcription credential or per-minute API bill. Recordings are handled by Apple's iCloud handoff, then archived and transcribed locally on the Mac.
+## Included and requirements
 
-## Included
+- Phone and new Mac audio Shortcuts share the same queue, archives, transcript cache, receipts and retry-safe task creation.
+- A launchd definition replaces Hammerspoon's queue timer. It polls every 15 seconds without overlapping receiver passes.
+- Native Apple speech on supported macOS 26+ hardware/languages; a small Swift helper uses SpeechAnalyzer/SpeechTranscriber. Assets are prepared explicitly, never downloaded during queue processing.
+- Optional offline Whisper `base.en` backend for compatibility. No silent fallback between backends or to cloud STT.
+- The legacy `--platform mac` dictation-to-Triage Shortcut and optional Hammerspoon hold-backslash trigger remain separate compatibility options. Hammerspoon no longer polls the queue or changes its own login settings.
 
-- Rebuildable mobile Shortcut: immediate recording, manual Stop, unique capture filename, literal iCloud folder.
-- An alternative mobile dictation workflow, rebuildable using `--capture-mode dictation`.
-- Python receiver: local archival, SQLite receipts, stable Hermes idempotency keys, legacy text support.
-- Local English transcription using `faster-whisper` and a provisioned `base.en` model. Normal processing does not download a model or fall back to a cloud provider.
-- Mac Shortcut source and Hammerspoon hold-backslash trigger, with phone-queue polling every 15 seconds.
-- Synthetic regression tests and CI on Linux and macOS.
+You need an awake, logged-in Mac, Python 3.9+, Hermes with Kanban and a configured worker profile, and a running Hermes gateway for actual kickoff. Phone capture also requires iCloud Drive/Shortcuts sync under the same Apple account. Native speech compilation requires a compatible Swift SDK/Command Line Tools. Initial speech asset preparation needs network access; recording recognition runs on-device afterward.
 
-Generated Shortcuts, recordings, receipts, private settings, and account-bound exports are excluded from Git.
+## 1. Prepare local transcription
 
-## Requirements
-
-- An iPhone with Shortcuts and a supported Action Button, or another existing Shortcut launch gesture.
-- The same Apple account, with iCloud Drive and Shortcuts sync enabled on the phone and Mac.
-- A Mac that stays awake, logged in, and online while receiving tasks.
-- Hammerspoon with the necessary macOS accessibility permissions.
-- Hermes Agent with Kanban, its gateway dispatcher, and a configured `default` profile. Mobile captures route to `default`; the preserved Mac path creates Triage cards.
-- Python 3.9+ for source generation/tests; Python 3.12 recommended for the optional transcription environment.
-
-Microphone permissions, locked-phone launch, synchronization, and long recording behavior must be checked on each physical phone. A generated Shortcut is not proof of those conditions.
-
-## 1. Set up local transcription
-
-Clone to a durable location:
+Clone to a durable location. On a supported modern Mac:
 
 ```sh
 git clone https://github.com/alvarezdaymion/ConcoDispatch.git "$HOME/src/ConcoDispatch"
 cd "$HOME/src/ConcoDispatch"
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements-audio.txt
+make native
+dist/concodispatch-transcribe --check
+mkdir -p "$HOME/Library/Application Support/Hermes Voice Kanban/bin"
+cp dist/concodispatch-transcribe "$HOME/Library/Application Support/Hermes Voice Kanban/bin/transcribe"
+"$HOME/Library/Application Support/Hermes Voice Kanban/bin/transcribe" --prepare
 ```
 
-Provision the model once, deliberately allowing its public download during setup:
+`--check` queries support/assets without downloading. `--prepare` is the explicit setup download. `--locale en-US` is the default; choose a supported locale deliberately. Normal positional audio-file processing never prepares missing assets. Unsupported hardware, missing assets or failed/empty recognition remain recoverable errors.
 
-```sh
-.venv/bin/python -c 'from faster_whisper import WhisperModel; WhisperModel("base.en", device="cpu", compute_type="int8", local_files_only=False)'
-```
+For an older Mac or explicit Whisper preference, create a venv, install `requirements-audio.txt`, provision `base.en` once with `local_files_only=False`, then configure `VOICE_KANBAN_STT_BACKEND=whisper` and that venv's absolute Python path. Runtime uses `local_files_only=True`.
 
-Normal processing uses `local_files_only=True`. A missing dependency/model is a recoverable error, not permission to upload a recording elsewhere.
-
-## 2. Configure the queue
-
-Create the receiver config:
+## 2. Configure routing and state
 
 ```sh
 mkdir -p "$HOME/Library/Application Support/Hermes Voice Kanban"
@@ -69,73 +53,80 @@ cp config.example.sh "$HOME/Library/Application Support/Hermes Voice Kanban/conf
 chmod 600 "$HOME/Library/Application Support/Hermes Voice Kanban/config.sh"
 ```
 
-Edit the paths to match your checkout and environment. This file is trusted shell code; keep it private. Configuration and state paths retain the `Hermes Voice Kanban` name for compatibility.
+Edit executable paths to match `command -v python3` and `command -v hermes`. Keep the config private: it is trusted shell code. Do not overwrite an existing deployment's config, receipts or recordings with example defaults.
 
 | Setting | Meaning |
 | --- | --- |
-| `VOICE_KANBAN_PYTHON` | Absolute path to the transcription environment's Python |
-| `VOICE_KANBAN_QUEUE_DIR` | Mac's iCloud Drive/Shortcuts queue path |
-| `VOICE_KANBAN_STATE_DIR` | Local audio archive and SQLite receipt directory |
-| `VOICE_KANBAN_ENVELOPE_MARKER` | Marker for legacy text captures; default `VOICEKANBAN/2` |
-| `VOICE_KANBAN_HERMES_BIN` | Optional explicit CLI path; otherwise PATH or the standard home install |
-| `VOICE_KANBAN_NOTIFY_TARGET` | Optional receipt destination; empty disables sends |
+| `VOICE_KANBAN_PYTHON` | Absolute receiver Python; only the Whisper backend needs its audio dependencies |
+| `VOICE_KANBAN_HERMES_BIN` | Absolute native Hermes CLI path; otherwise PATH/home fallback |
+| `VOICE_KANBAN_STT_BACKEND` | Explicit `apple` or `whisper`; old configs without it retain Whisper |
+| `VOICE_KANBAN_NATIVE_BIN`, `VOICE_KANBAN_LOCALE` | Compiled Apple helper path and supported speech locale |
+| `VOICE_KANBAN_STT_TIMEOUT`, `VOICE_KANBAN_CLI_TIMEOUT` | Positive finite deadlines in seconds; defaults 600 and 30 |
+| `VOICE_KANBAN_PROFILE`, `VOICE_KANBAN_BOARD`, `VOICE_KANBAN_ASSIGNEE` | Pin the Hermes home/profile, board and worker; example uses `default` |
+| `VOICE_KANBAN_QUEUE_DIR` | Matching Mac iCloud Drive/Shortcuts inbox |
+| `VOICE_KANBAN_STATE_DIR` | Existing local archive/receipt directory; keep it stable |
+| `VOICE_KANBAN_ENVELOPE_MARKER` | Legacy text marker, default `VOICEKANBAN/2` |
+| `VOICE_KANBAN_NOTIFY_TARGET` | Optional message destination; empty disables sends |
 | `VOICE_KANBAN_CONFIG` | Optional alternate shell config path |
 
-Preserve an existing deployment's queue, state directory, marker, and idempotency records. Do not reset its ledger to install an update.
+New receipts preserve their routing across retries. Historical receipts have no routing evidence: keep their original board/profile configuration during the first upgraded pass, especially after an uncertain create. Do not switch an old deployment's board while work is pending. Old configs omitting board/profile retain their legacy ambient routing; set explicit values for new deployments.
 
-## 3. Build and import the mobile Shortcut
+## 3. Build/import capture Shortcuts
 
 ```sh
 python3 -m voice_kanban.build_shortcut --platform mobile
-shortcuts sign --mode anyone \
-  --input 'dist/ConcoDispatch.unsigned.shortcut' \
-  --output 'dist/ConcoDispatch.shortcut'
+python3 -m voice_kanban.build_shortcut --platform mac-audio
+shortcuts sign --mode anyone --input 'dist/ConcoDispatch.unsigned.shortcut' --output 'dist/ConcoDispatch.shortcut'
 open 'dist/ConcoDispatch.shortcut'
 ```
 
-The default folder is `VoiceKanbanInbox/` relative to iCloud Drive/Shortcuts. Create that folder in Files. To preserve an existing folder, pass `--queue-folder 'ExistingInbox/'` and set the matching Mac path in the receiver config.
+Sign/import `ConcoDispatch Mac.unsigned.shortcut` similarly for the new Mac audio path. Launch it from Shortcuts or bind a native Shortcut keyboard/menu-bar gesture. It uses the same iCloud queue rather than the legacy direct-Triage path.
 
-For a new installation, select the imported Shortcut under Settings → Action Button → Shortcut. For an update, preserve the existing Shortcut identity: a same-named import may create a duplicate rather than update a phone's button reference. Update its existing action chain through Shortcuts if needed. Never edit Apple's Shortcuts database directly.
+Create `VoiceKanbanInbox/` under iCloud Drive/Shortcuts in Files. To preserve another queue, pass `--queue-folder 'ExistingInbox/'` and use its matching Mac config path. Record Audio must start **Immediately** and finish **On Tap**. Stop queues the recording automatically; no file picker, review or separate Send step.
 
-The first action must render as **Record Audio**, **Start Recording: Immediately**, **Finish Recording: On Tap**. Stop submits automatically. Run manually once to approve permissions, then test the normal button flow.
+On the phone, select the Shortcut under Settings → Action Button → Shortcut, or use another existing launch gesture. Run manually once for permissions. On upgrades, preserve the existing Shortcut identity/button binding; importing a same-named duplicate is not a guaranteed update. Never edit Apple's Shortcuts database directly.
 
-## 4. Start the receiver
+## 4. Start the launchd receiver
 
-`/bin/sh scripts/consume.sh` performs one configured import pass. It can create real tasks; do not point a test configuration at a real queue. `python3 -m voice_kanban.consumer` reads exported environment variables rather than sourcing the shell config.
+Generate a definition only; this command does not load a service:
 
-For polling and the preserved Mac trigger, load the module once from `~/.hammerspoon/init.lua`, preserving unrelated configuration:
-
-```lua
-require("hs.ipc")
-local repo = os.getenv("HOME") .. "/src/ConcoDispatch"
-voiceKanban = dofile(repo .. "/hammerspoon/voice_kanban.lua").start({
-    repo = repo,
-    shortcutName = "Hermes Voice Kanban Mac",
-})
+```sh
+python3 -m voice_kanban.build_launchagent --runtime "$PWD"
+plutil -lint dist/io.concodispatch.receiver.plist
 ```
 
-Reload Hammerspoon. It runs an immediate queue pass and checks every 15 seconds, without overlapping its own passes. Use a reviewed, frozen source revision for live validation; do not change source beneath an active receiver.
+For a reviewed live revision, create the configured state directory before loading (launchd needs its log paths), copy the plist into `~/Library/LaunchAgents/`, then explicitly load it with `launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/io.concodispatch.receiver.plist"`. Use `launchctl print "gui/$(id -u)/io.concodispatch.receiver"` to inspect it and `launchctl bootout "gui/$(id -u)/io.concodispatch.receiver"` before replacing it. Keep config paths aligned; `--config`, `--state`, `--interval` and `--runtime` are generator options.
 
-Rebuild the unchanged Mac Shortcut with `--platform mac`, then sign/import it as above. A normal backslash tap stays a typed backslash; holding starts Mac dictation; tapping again presses Stop.
+Use `scripts/install_snapshot.py` to produce a commit-frozen runtime when deploying reviewed source, and point the generated service at that path. The compiled speech helper and private config stay outside the snapshot. Do not change source beneath an active receiver.
 
-## Delivery and recovery
+**Migration:** remove the old queue-capable Hammerspoon module from active use or reload the updated trigger-only version before starting launchd. The advisory lock is defensive protection, not a reason to keep two schedulers. Do not discard existing state. The optional legacy hold-backslash module still launches `Hermes Voice Kanban Mac`; rebuild that preserved Triage Shortcut with `--platform mac` only if needed.
 
-The phone's saved notification means **queued**, not delivered. iCloud has variable sync latency. The Mac must be awake and online with Hammerspoon and the Hermes gateway running.
+`/bin/sh scripts/consume.sh` performs one configured pass and can create real tasks. `python3 -m voice_kanban.consumer` reads exported environment variables rather than sourcing shell config. Tests must never point either at a live queue.
 
-The receiver archives audio before transcription or task creation. Full audio transcripts go into the task body, with a short board title. Failures retain the source and archive for retry; original recordings remain locally archived without an automatic purge. Replays reuse the capture identity rather than intentionally launching duplicate work.
+## Delivery, recovery and testing
 
-Do not immediately repeat an important request because a card has not appeared. First inspect the queue, receipt, archive, and error to distinguish sync delay from processing failure. See [design and recovery](docs/design.md) and the [physical-phone acceptance checklist](docs/phone-tests.md).
+A saved notification means **queued**, not delivered or executed. iCloud sync, receiver scheduling, transcription and the gateway's dispatcher add delay. Card confirmation is not worker-start proof. A sleeping Mac cannot receive, and transcription can be imperfect.
 
-## Tests and limits
+The receiver archives before recognition, pins the complete transcript, reads the native task back exactly, and safely removes only the unchanged source. Failures preserve recoverable audio and reuse the original key. Optional messages run after intake/cleanup with deadlines; they can still duplicate after uncertain send responses. Archives have no automatic purge.
 
 ```sh
 make check
 ```
 
-The standard-library suite uses synthetic fixtures and mocked subprocesses. It does not contact a live board, record a microphone, or validate iCloud. Use synthetic audio and an isolated Hermes board for local end-to-end checks. Physical phone tests are a separate final gate.
+Canonical tests are isolated, synthetic and standard-library-only. Native compile/error-path tests run when a compatible Mac SDK is available; they do not download assets. Use real synthetic audio and an isolated Hermes home/board for opt-in integration. Real microphone capture, Shortcut editor rendering/import, iCloud, locked-phone launch and actual worker execution remain separate acceptance gates.
 
-This is not a guaranteed delivery service. A sleeping Mac cannot receive; iCloud can delay; local transcription is imperfect. English `base.en` is the initial model. The unchanged Mac dictation path still has its original timeout and weaker recovery properties. Optional receipt sends can duplicate after an uncertain response, and contain a short transcript summary; enable them deliberately.
+To synthesize a long narration with a six-second thinking pause, run `NATIVE_SPEECH_PROOF=1 python3 -m unittest discover -s tests -p test_native_speech.py -v` after explicitly preparing speech assets. This requires the local `say` voice and ffmpeg; it never records a microphone. Then run the real-CLI replay check:
 
-## Portfolio and demonstration
+```sh
+python3 scripts/test_audio_integration.py \
+  --audio .local/native-proof/narration.m4a \
+  --native-bin dist/concodispatch-transcribe \
+  --hermes-bin "$(command -v hermes)" \
+  --expect 'Purple lantern opens this recording' \
+  --expect 'after a quiet pause' \
+  --expect 'Silver compass closes this recording'
+```
 
-The project demonstrates a minimal interface backed by durable automation, not guaranteed iCloud delivery. Use synthetic recordings and isolated boards; never expose real task content or account identifiers. See [security guidance](SECURITY.md) for data handling and vulnerability reporting.
+The harness pins isolated `HOME`, `HERMES_HOME`, `HERMES_KANBAN_HOME` and `HERMES_KANBAN_DB`, checks the exact task body, then replays without a recognizer and verifies one task. It does not start a gateway or prove worker execution. Prepare the final compiled helper path explicitly if its `--check` reports missing assets.
+
+See [design/recovery](docs/design.md), [phone acceptance](docs/phone-tests.md) and [security](SECURITY.md). Never repeat an important request blindly or reset receipts to force delivery.

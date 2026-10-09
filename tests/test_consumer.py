@@ -146,7 +146,7 @@ class ConsumerTests(unittest.TestCase):
         source = self.capture()
         self.run_consumer(1)
         self.assertEqual(self.receipt(), ("confirmed", "t_synthetic", None))
-        source.unlink()
+        self.assertFalse(source.exists(), 'A failed optional send must not retain a confirmed queue entry')
         self.run_consumer()
         calls = self.recorded()
         self.assertEqual(sum(a[:2] == ["kanban", "create"] for a in calls), 1)

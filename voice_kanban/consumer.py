@@ -6,6 +6,7 @@ from contextlib import closing
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -33,6 +34,9 @@ STATE_DIR = Path(os.environ.get(
 )).expanduser()
 ENVELOPE_MARKER = os.environ.get("VOICE_KANBAN_ENVELOPE_MARKER", "VOICEKANBAN/2")
 NOTIFY_TARGET = os.environ.get("VOICE_KANBAN_NOTIFY_TARGET", "").strip()
+BOARD = os.environ.get('VOICE_KANBAN_BOARD', '').strip()
+PROFILE = os.environ.get('VOICE_KANBAN_PROFILE', '').strip()
+ASSIGNEE = os.environ.get('VOICE_KANBAN_ASSIGNEE', 'default').strip()
 DATABASE_PATH = STATE_DIR / "receipts.sqlite3"
 ARCHIVE_DIR = STATE_DIR / "archive"
 CAPTURE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._,-]{7,127}$")
@@ -43,9 +47,49 @@ class CaptureError(RuntimeError):
     """A capture cannot be processed safely."""
 
 
+def run_command(arguments: list[str]) -> subprocess.CompletedProcess:
+    timeout = float(os.environ.get('VOICE_KANBAN_CLI_TIMEOUT', '30'))
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise CaptureError('CLI timeout must be positive and finite')
+    try:
+        return subprocess.run(arguments, text=True, capture_output=True, check=True, timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        raise CaptureError(f'Hermes command exceeded {timeout:g} seconds; retry preserves capture identity') from error
+
+
 def run_json(arguments: list[str]) -> Any:
-    completed = subprocess.run(arguments, text=True, capture_output=True, check=True)
+    completed = run_command(arguments)
     return json.loads(completed.stdout)
+
+
+def capture_route() -> dict:
+    if not ASSIGNEE:
+        raise CaptureError('A capture requires an explicit assignee')
+    return {'board': BOARD, 'profile': PROFILE, 'assignee': ASSIGNEE}
+
+
+def read_route(encoded: str) -> dict:
+    route = json.loads(encoded)
+    if (not isinstance(route, dict)
+            or any(not isinstance(route.get(key), str) for key in ('board', 'profile', 'assignee'))
+            or not route['assignee'].strip()):
+        raise CaptureError('Invalid saved capture routing; restore the original receipt')
+    return route
+
+
+def hermes_arguments(profile: str) -> list[str]:
+    arguments = [HERMES]
+    if profile:
+        arguments.extend(['--profile', profile])
+    return arguments
+
+
+def kanban_arguments(route: dict) -> list[str]:
+    arguments = hermes_arguments(route['profile'])
+    arguments.append('kanban')
+    if route['board']:
+        arguments.extend(['--board', route['board']])
+    return arguments
 
 
 def queue_files() -> list[Path]:
@@ -174,6 +218,8 @@ def connect_database() -> sqlite3.Connection:
         )
     """)
     columns = {row[1] for row in database.execute("PRAGMA table_info(captures)")}
+    if 'routing_json' not in columns:
+        database.execute('ALTER TABLE captures ADD COLUMN routing_json TEXT')
     if "legacy_transcript_eligible" not in columns:
         database.execute("ALTER TABLE captures ADD COLUMN legacy_transcript_eligible INTEGER NOT NULL DEFAULT 0")
         if "transcript_sha256" not in columns:
@@ -267,16 +313,16 @@ def read_audio_transcript(database: sqlite3.Connection, capture_id: str, path: P
     return transcript
 
 
-def notify(capture_id: str, task_id: str, transcript: str) -> None:
+def notify(capture_id: str, task_id: str, transcript: str, *, profile: str = '') -> None:
     if not NOTIFY_TARGET:
         return
     summary = " ".join(transcript.split())
     if len(summary) > 120:
         summary = summary[:117] + "..."
-    subprocess.run([
-        HERMES, "send", "--to", NOTIFY_TARGET,
+    run_command(hermes_arguments(profile) + [
+        "send", "--to", NOTIFY_TARGET,
         f"Voice capture {capture_id[-6:]} confirmed in Kanban as {task_id}: {summary}",
-    ], text=True, capture_output=True, check=True)
+    ])
 
 
 def process_capture(database: sqlite3.Connection, path: Path,
@@ -314,22 +360,29 @@ def _process_capture(database: sqlite3.Connection, path: Path,
         raise CaptureError(f"Capture filename {path.stem!r} does not match payload {capture_id!r}")
     now = time.time()
     existing = database.execute(
-        "SELECT payload_sha256, status, task_id, notified_at, archived_path FROM captures WHERE capture_id = ?",
+        "SELECT payload_sha256, status, task_id, archived_path, routing_json FROM captures WHERE capture_id = ?",
         (capture_id,),
     ).fetchone()
     if existing and existing[0] != digest:
         raise CaptureError(f"Capture ID reused with different content: {capture_id}")
     if not existing:
+        route = capture_route()
         database.execute("""
             INSERT INTO captures (
                 capture_id, source_name, payload_sha256, archived_path,
-                captured_at, status, created_at, updated_at, legacy_transcript_eligible
-            ) VALUES (?, ?, ?, ?, ?, 'archived', ?, ?, 0)
-        """, (capture_id, path.name, digest, str(archive_path), captured_at, now, now))
+                captured_at, status, created_at, updated_at, legacy_transcript_eligible, routing_json
+            ) VALUES (?, ?, ?, ?, ?, 'archived', ?, ?, 0, ?)
+        """, (capture_id, path.name, digest, str(archive_path), captured_at, now, now, json.dumps(route)))
         database.commit()
-        status, task_id, notified_at = "archived", None, None
+        status, task_id = "archived", None
     else:
-        _, status, task_id, notified_at, saved_archive = existing
+        _, status, task_id, saved_archive, routing_json = existing
+        route = read_route(routing_json) if routing_json is not None else capture_route()
+        if routing_json is None:
+            # Historical receipts have no routing evidence; retain their original
+            # board/profile configuration for the first upgraded processing pass.
+            database.execute('UPDATE captures SET routing_json = ? WHERE capture_id = ?', (json.dumps(route), capture_id))
+            database.commit()
         archive_path = Path(saved_archive)
         if archive_path.parent != ARCHIVE_DIR or hashlib.sha256(read_stable(archive_path)).hexdigest() != digest:
             raise CaptureError(f"Archived payload does not match receipt: {capture_id}")
@@ -367,9 +420,9 @@ def _process_capture(database: sqlite3.Connection, path: Path,
             raise CaptureError("Durable audio transcript is missing or empty")
 
     if status != "confirmed":
-        arguments = [
-            HERMES, "kanban", "create", transcript.strip().splitlines()[0][:120] if audio else transcript,
-            "--assignee", "default", "--created-by", "iphone-voice-capture",
+        arguments = kanban_arguments(route) + [
+            "create", transcript.strip().splitlines()[0][:120] if audio else transcript,
+            "--assignee", route['assignee'], "--created-by", "iphone-voice-capture",
             "--idempotency-key", f"iphone-voice-capture:{capture_id}",
         ]
         if audio:
@@ -379,7 +432,7 @@ def _process_capture(database: sqlite3.Connection, path: Path,
         if not isinstance(task_id, str) or not task_id:
             raise CaptureError("Hermes did not return a Kanban task ID")
         if audio:
-            shown = run_json([HERMES, "kanban", "show", str(task_id), "--json"])
+            shown = run_json(kanban_arguments(route) + ["show", str(task_id), "--json"])
             actual = shown.get("task", {}) if isinstance(shown, dict) else {}
             if not isinstance(actual, dict) or actual.get("id") != task_id or actual.get("body") != transcript:
                 raise CaptureError("Kanban readback did not match the full audio transcript")
@@ -388,15 +441,6 @@ def _process_capture(database: sqlite3.Connection, path: Path,
             SET status = 'confirmed', task_id = ?, last_error = NULL, updated_at = ?
             WHERE capture_id = ?
         """, (task_id, time.time(), capture_id))
-        database.commit()
-        notified_at = None
-
-    if NOTIFY_TARGET and notified_at is None:
-        notify(capture_id, str(task_id), transcript)
-        database.execute(
-            "UPDATE captures SET notified_at = ?, updated_at = ? WHERE capture_id = ?",
-            (time.time(), time.time(), capture_id),
-        )
         database.commit()
 
     path = source_path if source_path is not None else path
@@ -410,12 +454,12 @@ def retry_orphaned_notifications(database: sqlite3.Connection) -> int:
         return 0
     failures = 0
     rows = database.execute("""
-        SELECT capture_id, task_id, source_name, archived_path
+        SELECT capture_id, task_id, source_name, archived_path, routing_json
         FROM captures
         WHERE status = 'confirmed' AND notified_at IS NULL AND task_id IS NOT NULL
         ORDER BY created_at
     """).fetchall()
-    for capture_id, task_id, source_name, archived_path in rows:
+    for capture_id, task_id, source_name, archived_path, routing_json in rows:
         if (QUEUE_DIR / source_name).exists():
             continue
         try:
@@ -424,7 +468,8 @@ def retry_orphaned_notifications(database: sqlite3.Connection) -> int:
                 transcript = read_audio_transcript(database, capture_id, audio_transcript_path(database, capture_id, archive))
             else:
                 _, transcript, _ = parse_envelope(read_stable(archive), source_name)
-            notify(capture_id, task_id, transcript)
+            profile = read_route(routing_json)['profile'] if routing_json is not None else PROFILE
+            notify(capture_id, task_id, transcript, profile=profile)
             database.execute(
                 "UPDATE captures SET notified_at = ?, updated_at = ? WHERE capture_id = ?",
                 (time.time(), time.time(), capture_id),
@@ -442,7 +487,7 @@ def retry_orphaned_notifications(database: sqlite3.Connection) -> int:
 
 def consume_queue(transcriber: Callable[[Path], str] | None) -> int:
     with closing(connect_database()) as database:
-        failures = retry_orphaned_notifications(database)
+        failures = 0
         # Only audio has a durable transcription recovery contract. Preserve
         # legacy text retry behavior and never treat raw archives as queue files.
         pending = database.execute("""
@@ -469,6 +514,8 @@ def consume_queue(transcriber: Callable[[Path], str] | None) -> int:
                     ValueError, CaptureError) as error:
                 failures += 1
                 print(f"Voice capture failed for {path.name}: {error}", file=sys.stderr)
+        # Optional receipts cannot delay delivery or cleanup of this intake batch.
+        failures += retry_orphaned_notifications(database)
     return 1 if failures else 0
 
 

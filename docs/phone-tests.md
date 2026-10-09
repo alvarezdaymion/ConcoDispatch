@@ -12,7 +12,7 @@ Run these on every participating phone after its Shortcut has synced:
 
 Use harmless requests, for example asking the agent to acknowledge the test and take no external action. Real captures still launch real agents automatically.
 
-The phone's saved notification means **queued**, not received or executed. iCloud sync has variable latency. The Mac must be awake and online; Hammerspoon and the Hermes gateway must be running. Local audio transcription adds processing time after Stop.
+The phone's saved notification means **queued**, not received or executed. iCloud sync has variable latency. The Mac must be awake and online; the launchd receiver and Hermes gateway must be running. Hammerspoon is not required. Local audio transcription and gateway dispatch add processing time after Stop.
 
 If nothing arrives, do not repeat a real request immediately: first inspect the phone's saved notification, iCloud queue, receiver error, and SQLite receipt to distinguish sync delay from processing failure. Audio remains in the local archive for retry. Retrying with the same capture identity must not create a second card.
 
