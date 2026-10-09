@@ -1,0 +1,23 @@
+name: Baseline checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ['3.9', '3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Synthetic tests and source rebuild (standard library only)
+        run: make check
+      - name: Compile Mac AppleScript without running it
+        if: runner.os == 'macOS'
+        run: osacompile -o .local/mac_capture.scpt shortcuts/mac_capture.applescript
