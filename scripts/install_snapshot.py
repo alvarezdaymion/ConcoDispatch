@@ -12,7 +12,7 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DIRECTORIES = ('voice_kanban/', 'scripts/', 'hammerspoon/', 'shortcuts/')
+DIRECTORIES = ('voice_kanban/', 'native/', 'scripts/', 'hammerspoon/', 'shortcuts/')
 FILES = {'requirements-audio.txt', 'config.example.sh'}
 
 
