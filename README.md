@@ -48,6 +48,6 @@ Keep the Mac awake, logged in, and connected. Delivery isn't instant, and a save
 
 ## More information
 
-[Manual setup and developer reference](docs/manual-setup.md) · [Troubleshooting and recovery](docs/design.md) · [Phone testing](docs/phone-tests.md) · [Privacy and security](SECURITY.md)
+[Setup and testing](docs/setup.md) · [Technical details and recovery](docs/design.md) · [Privacy and security](SECURITY.md)
 
 Free and open source under the [MIT license](LICENSE).

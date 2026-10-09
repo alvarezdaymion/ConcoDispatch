@@ -16,7 +16,7 @@ Native setup requires macOS 26+, a supported Apple speech locale/hardware, Pytho
 
 Check the intended Hermes profile, board and assignee before enabling intake. A running gateway is required for automatic worker dispatch; an installed CLI alone does not prove this. Do not silently change gateway configuration or restart a working gateway.
 
-Keep existing shell config trusted and private. Existing settings are authoritative, including custom queue/state paths and notification destinations. If a legacy backend or configuration is not supported by automatic preparation, stop with the precise reason and use the documented manual path. Do not replace it with example defaults or guess historical routing.
+Keep existing shell config trusted and private. Existing settings are authoritative, including custom queue/state paths and notification destinations. Apple transcription is the only supported backend. If an existing configuration is incompatible, stop with the precise reason; do not replace it with example defaults or guess historical routing.
 
 ## 2. Prepare, without enabling intake
 
@@ -44,9 +44,9 @@ launchctl bootout "gui/$(id -u)/io.concodispatch.receiver"
 
 Prepare the new version, then activate explicitly. Preserve the previous app, definition and helper as rollback material before an upgrade; retain all source snapshots and the existing config/state. If preparation fails, do not activate incomplete files: restore the previous binaries/definition and bootstrap the previous service. Never kill unrelated apps/services or discard receipts to make setup pass.
 
-Automatic preparation supports explicitly configured Apple speech installations only. Whisper remains available through [manual setup](manual-setup.md). Existing speech helper bytes are reused, not upgraded automatically. Older/unrecognized service definitions require manual migration. The queue must be a subfolder of the Shortcuts iCloud workflow container. Changing settings or signing identity for an existing commit build requires manual review; setup refuses to overwrite that build.
+Existing speech helper bytes are reused, not upgraded automatically. Older/unrecognized service definitions require manual migration. The queue must be a subfolder of the Shortcuts iCloud workflow container. Changing settings or signing identity for an existing commit build requires manual review; setup refuses to overwrite that build.
 
-Disable an old Hammerspoon queue scheduler separately before activation. Do not remove unrelated hotkeys or change its login settings. The advisory receipt lock is a safety net, not permission to keep competing schedulers.
+Disable any previous queue scheduler separately before activation. Do not remove unrelated hotkeys or change login settings. The advisory receipt lock is a safety net, not permission to keep competing schedulers.
 
 ## 3. Import only a missing Shortcut
 
@@ -82,4 +82,23 @@ Use a harmless diagnostic recording that requests only acknowledgment and no ext
 
 Keep the Mac awake and logged in. iCloud, transcription and dispatcher timing add variable latency. Transcription can be imperfect; task actions retain the agent's own approval boundaries. Confirm the reported final sentence was the actual spoken ending.
 
-Follow [phone acceptance](phone-tests.md) for several-minute capture, thinking pauses and locked-phone tests. A clean clone plus isolated output home proves packaging without old config, not a second Apple account, a fresh Mac, or new phone consent. Treat those evidence layers separately.
+Test each phone after its Shortcut has synced:
+
+- Start with a short, harmless request. Tap Stop and confirm one task contains the full transcript and the worker's acknowledgment.
+- Record for several minutes with a thinking pause and distinct opening/closing phrases. Recording must continue until Stop, and both phrases must reach the task.
+- Check locked-phone launching separately. A working unlocked test does not prove locked-device permissions.
+- If nothing arrives, inspect sync, receiver logs and the receipt before repeating the request. Do not reset receipts to force delivery; [recovery details](design.md#recovery-boundaries) explain the retained state.
+
+A clean clone plus isolated output home proves packaging without old config, not a second Apple account, a fresh Mac, or new phone consent. Synthetic recordings do not prove phone microphone capture or phone-side sync.
+
+## Optional Mac audio capture
+
+The Mac Shortcut records audio into the same configured queue. From the repository root, generate and sign it:
+
+```sh
+python3 -m voice_kanban.build_shortcut --platform mac-audio --queue-folder 'VoiceKanbanInbox/'
+shortcuts sign --mode anyone --input 'dist/ConcoDispatch Mac.unsigned.shortcut' --output 'dist/ConcoDispatch Mac.shortcut'
+open 'dist/ConcoDispatch Mac.shortcut'
+```
+
+Use the actual configured queue folder if it differs. Preserve an existing Shortcut's identity instead of importing a duplicate. Launch it from Shortcuts or assign a native keyboard/menu-bar gesture; no separate scheduler is needed.

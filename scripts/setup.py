@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Prepare ConcoDispatch; activation and native Shortcut import require explicit flags.
 
-Active receivers must be explicitly deactivated before preparation. Existing
-Whisper configurations require manual installation and are never migrated here.
+Active receivers must be explicitly deactivated before preparation.
 """
 from __future__ import annotations
 
@@ -78,8 +77,8 @@ def settings(args):
         values['PYTHON'] = '/usr/bin/python3'
         values['HERMES_BIN'] = (shutil.which('hermes', path='/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin')
                                 or str(home / '.hermes/hermes-agent/venv/bin/hermes'))
-        if existing.get('STT_BACKEND', 'whisper') != 'apple':
-            raise RuntimeError('Whisper/unknown backend requires manual compatibility setup; no files changed')
+        if existing.get('STT_BACKEND') != 'apple':
+            raise RuntimeError('Existing config must explicitly select Apple transcription; no files changed')
         for key in ('NATIVE_BIN', 'QUEUE_DIR', 'STATE_DIR', 'PROFILE', 'BOARD', 'ASSIGNEE', 'ENVELOPE_MARKER'):
             if not existing.get(key):
                 raise RuntimeError('Existing config must explicitly pin ' + key + '; no files changed')
@@ -229,8 +228,7 @@ def prepare(args, home, config, cloud, values, queue):
                          stage / 'cache', runtime / 'native/receiver.swift', '-o', executable], home, 300)
                 require(['/usr/bin/codesign', '--force', '--sign', args.signing_identity or '-', staged_app], home)
                 require(['/usr/bin/codesign', '--verify', '--strict', staged_app], home)
-                unsigned = write_unsigned(stage / 'ConcoDispatch.unsigned.shortcut', queue_folder=queue,
-                                          envelope_marker=values['ENVELOPE_MARKER'])
+                unsigned = write_unsigned(stage / 'ConcoDispatch.unsigned.shortcut', queue_folder=queue)
                 signed = stage / 'ConcoDispatch.shortcut'
                 require(['/usr/bin/shortcuts', 'sign', '--mode', 'anyone', '--input', unsigned, '--output', signed], home, 180)
                 if not signed.is_file() or not signed.stat().st_size:

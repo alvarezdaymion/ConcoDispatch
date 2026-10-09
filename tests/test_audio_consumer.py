@@ -460,7 +460,7 @@ class AudioConsumerTests(unittest.TestCase):
         self.assertEqual((self.archive / self.source.name).read_bytes(), self.payload)
 
     def test_fresh_process_recovers_transcript_without_retranscribing(self):
-        # Both subprocesses use explicit fakes; no installed Whisper or Hermes.
+        # Both subprocesses use explicit fakes; no installed recognizer or Hermes.
         env = {key: value for key, value in os.environ.items() if not key.startswith("VOICE_KANBAN_")}
         env.update(VOICE_KANBAN_QUEUE_DIR=str(self.queue), VOICE_KANBAN_STATE_DIR=str(self.state),
                    VOICE_KANBAN_NOTIFY_TARGET="", VOICE_KANBAN_HERMES_BIN="synthetic-hermes")
@@ -493,22 +493,18 @@ raise SystemExit(consumer.main(transcriber=transcribe))
 
 
     def test_default_transcriber_imports_from_script_and_module_entrypoints(self):
-        # Fake only the optional library. Both real CLI entrypoints must lazily
+        # Fake only the native helper. Both real CLI entrypoints must lazily
         # import transcribe.py, then retain their durable transcript on CLI error.
-        (self.root / "faster_whisper.py").write_text(
-            "from types import SimpleNamespace\n"
-            "class WhisperModel:\n"
-            "    def __init__(self, name, **kwargs):\n"
-            "        assert name == 'base.en' and kwargs['local_files_only'] is True\n"
-            "    def transcribe(self, path, **kwargs):\n"
-            "        assert kwargs == {'language': 'en', 'vad_filter': True}\n"
-            "        return iter([SimpleNamespace(text='Synthetic local import proof')]), None\n"
-        )
+        helper = self.root / "native-helper"
+        helper.write_text(f"#!{sys.executable}\n"
+                          "print('{\"text\":\"Synthetic local import proof\"}')\n")
+        helper.chmod(0o755)
         self.source.unlink()
         env = {key: value for key, value in os.environ.items() if not key.startswith("VOICE_KANBAN_")}
         env.update(VOICE_KANBAN_QUEUE_DIR=str(self.queue), VOICE_KANBAN_STATE_DIR=str(self.state),
                    VOICE_KANBAN_NOTIFY_TARGET="", VOICE_KANBAN_HERMES_BIN=str(self.root / "missing-hermes"),
-                   PYTHONPATH=os.pathsep.join((str(self.root), str(ROOT))))
+                   VOICE_KANBAN_STT_BACKEND="apple", VOICE_KANBAN_NATIVE_BIN=str(helper),
+                   VOICE_KANBAN_STT_TIMEOUT="600", VOICE_KANBAN_LOCALE="en-US", PYTHONPATH=str(ROOT))
         entries = ([str(ROOT / "voice_kanban" / "consumer.py")], ["-m", "voice_kanban.consumer"])
         for index, entry in enumerate(entries):
             with self.subTest(entry=entry):
