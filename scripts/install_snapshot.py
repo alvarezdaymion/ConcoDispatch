@@ -47,7 +47,19 @@ def install_snapshot(repo: Path, destination: Path) -> Path:
                 'sha256': {name: digest(data) for name, data in sorted(source.items())}}
     destination.mkdir(parents=True, exist_ok=True)
     installed = destination / commit
+    if installed.is_symlink():
+        raise RuntimeError('Existing snapshot root must not be a symlink')
     if installed.exists():
+        expected_paths = set(source) | {'SOURCE.json'}
+        for name in source:
+            expected_paths.update(str(parent) for parent in Path(name).parents if str(parent) != '.')
+        actual_paths = set()
+        for path in installed.rglob('*'):
+            if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                raise RuntimeError('Existing snapshot contains a nonregular path: ' + str(path.relative_to(installed)))
+            actual_paths.add(str(path.relative_to(installed)))
+        if actual_paths != expected_paths:
+            raise RuntimeError('Existing snapshot path set does not match the source revision')
         if json.loads((installed / 'SOURCE.json').read_text()) != manifest:
             raise RuntimeError('Existing snapshot manifest does not match the source revision')
         for name, expected in manifest['sha256'].items():

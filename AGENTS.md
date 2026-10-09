@@ -1,18 +1,23 @@
 # Working in this repository
 
-This repository preserves the dictation-based baseline in PR #1. Capture changes belong on a separate branch.
+## Scope and compatibility
 
-## Git workflow
+- Support Python 3.9+ for source generation and tests. Optional audio dependencies are pinned in `requirements-audio.txt`.
+- Preserve Mac direct `--triage` creation separately from mobile `--assignee default` creation.
+- Keep the mobile idempotency key `iphone-voice-capture:<capture_id>` stable. Archive before create, retain changed sources, and retry uncertain creates with the same key.
+- A queued notification must not imply Kanban confirmation.
+- Use home-relative defaults and `VOICE_KANBAN_*` configuration. Preserve existing receipt ledgers when updating.
 
-- GitHub is the canonical source. Fetch current `main`, branch, test, push the branch, and open a pull request.
-- Do not direct-push, force-push, merge, or enable auto-merge without the owner's explicit authorization. Keep baseline preservation separate from subsequent fixes.
-- Keep the repository private until the owner explicitly approves publication. Source should be portfolio-safe from its first commit; no recordings, runtime state, or account-bound exports in history.
+## Verification
 
-- Run `python3 -m unittest discover -s tests -v` and `make shortcuts` before reporting a change complete. Source generation and tests use the standard library; audio runtime dependencies are pinned separately in `requirements-audio.txt`. Support Python 3.9+ for the source/tests.
-- Keep tests synthetic and isolated under `.local/`. Stub Hermes rather than touching a real board, gateway, cloud queue, or notification destination.
-- Do not import Shortcuts, reload Hammerspoon, run generated AppleScript, or deploy runtime files as part of tests. Shortcuts compilation is not device execution.
-- Keep the mobile idempotency key `iphone-voice-capture:<capture_id>` stable. Archive before create; retain a changed source; retry uncertain creates with the same key.
-- Preserve Mac direct `--triage` creation separately from mobile `--assignee default` creation. A queued notification must not imply a Kanban confirmation.
-- Use home-relative defaults and `VOICE_KANBAN_*` configuration. Do not commit machine paths, account/device IDs, live destinations, credentials, transcripts, databases, or generated Shortcut binaries.
-- Review `git diff` and `git status` for privacy before staging. Runtime data belongs outside Git; `.gitignore` is not a security boundary.
-- Document behavior gaps honestly. A mocked passing test is not proof of Apple dictation, iCloud sync, delivery, or gateway execution.
+- Run `make check` before submitting a change. On macOS, also compile the AppleScript without running it: `osacompile -o .local/mac_capture.scpt shortcuts/mac_capture.applescript`.
+- Keep tests synthetic and isolated under `.local/`. Stub Hermes; never touch a live board, gateway, cloud queue, or notification destination.
+- Do not import Shortcuts, reload Hammerspoon, run generated AppleScript, or deploy runtime files during tests.
+- Source generation and mocked tests do not prove microphone capture, physical-device behavior, iCloud synchronization, delivery, or gateway execution. Document those limits explicitly.
+
+## Repository hygiene
+
+- Submit changes through pull requests. Do not force-push, direct-push to the default branch, or merge without explicit authorization.
+- Keep source, comments, and documentation technical and portable. Exclude session notes and deployment-specific status.
+- Do not commit machine paths, account/device IDs, live destinations, credentials, transcripts, recordings, databases, local settings, or generated Shortcut binaries.
+- Review the diff and staged paths before committing. `.gitignore` is not a security boundary.
