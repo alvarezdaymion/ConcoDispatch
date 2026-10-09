@@ -347,7 +347,7 @@ class SetupTests(unittest.TestCase):
         before = sorted(str(p) for p in self.home.rglob('*'))
         code, output = self.invoke('--prepare')
         self.assertNotEqual(code, 0)
-        self.assertIn('Whisper', output)
+        self.assertIn('Apple', output)
         self.assertEqual(before, sorted(str(p) for p in self.home.rglob('*')))
         self.assertFalse(self.calls)
 

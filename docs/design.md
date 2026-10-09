@@ -11,10 +11,9 @@ Mac launchd (15s) → receiver → raw archive + SQLite receipt
                                 → remove unchanged source → optional receipt batch
 
 Legacy phone text → same queue/ledger → original text creation behavior
-Mac hold-backslash → Dictate Text → Stop → AppleScript → Hermes Triage
 ```
 
-Launchd schedules nonoverlapping one-shot receiver passes. New Mac audio and phone audio share intake; legacy Mac dictation remains a separate direct-Triage option. Hammerspoon is an optional legacy trigger, never a receiver dependency. No silence detector is used.
+Launchd schedules nonoverlapping one-shot receiver passes. Mac and phone audio share intake and Apple transcription. No silence detector is used.
 
 ## Identity
 
@@ -24,7 +23,7 @@ Audio IDs are recovered from filenames. The receiver accepts doubled audio exten
 
 Supported audio suffixes: `.m4a`, `.wav`, `.mp3`, `.caf`, `.aiff`. The phone source produces `.m4a`; doubled extensions are tolerated. Generated action UUIDs connect workflow actions, not machine or account identities.
 
-The alternative text workflow is rebuildable with `--capture-mode dictation`. It writes:
+Earlier phone versions wrote text captures in this format. The receiver retains intake compatibility to recover existing queued files and receipts; new Shortcuts generate audio only:
 
 ```text
 VOICEKANBAN/2
@@ -41,7 +40,7 @@ Draft a project outline.
 1. Acquire a nonblocking advisory lock in the state directory. Another receiver pass exits without work.
 2. Read a regular, nonsymlink source and check file identity/size/timestamps before and after the read.
 3. Atomically archive the exact bytes locally, fsync the file and directory, and commit an `archived` SQLite receipt before transcription.
-4. Transcribe the archived file using an explicitly selected local backend. Apple SpeechAnalyzer/SpeechTranscriber uses prepared on-device assets on supported macOS 26+ systems. `--check` never downloads; only explicit `--prepare` may provision assets. Compatibility Whisper uses offline-only CPU/int8 English `base.en`. Both run in subprocesses with a positive finite deadline (default 600 seconds); no network/cloud fallback is permitted.
+4. Transcribe the archived file with Apple SpeechAnalyzer/SpeechTranscriber using prepared on-device assets on supported macOS 26+ systems. `--check` never downloads; only explicit `--prepare` may provision assets. Recognition runs in a subprocess with a positive finite deadline (default 600 seconds); no network/cloud fallback is permitted.
 5. Persist the entire transcript as a fsynced sidecar under `archive/.transcripts/`, separate from raw capture filenames. Bind its SHA-256 to the receipt before task creation and validate it on retries and notification recovery.
 6. Commit routing alongside the new receipt, then create a card with a short title, full transcript via `--body-file`, configured assignee (default `default`), creator `iphone-voice-capture`, and stable key `iphone-voice-capture:<capture_id>`. Shared Mac audio deliberately uses the same historical key namespace. Explicit profile/board routing is reused for create and readback even if configuration changes during a retry. Historical receipts lack routing evidence: preserve their original board/profile configuration during the first upgraded pass. Omitted profile/board retains legacy ambient routing; new deployments should pin both.
 7. Read the exact task back using native `kanban show --json`. Verify task identity and exact body before marking the receipt confirmed.
@@ -69,7 +68,7 @@ Historical caches have no prior digest, so migration cannot detect modifications
 
 `scripts/install_snapshot.py` installs regular, tracked runtime source from a clean committed revision into a commit-named directory. It excludes settings, recordings, environments, and state. `SOURCE.json` binds the commit, tree, and file hashes; reinstall verifies the complete path set, rejects symlinks and unexpected additions, and validates file hashes instead of overwriting contents. The receiver wrapper disables bytecode writes to keep frozen trees unchanged. Direct Python invocation of a snapshot must also disable bytecode writes; existing extra files, including caches, require review before reinstallation can verify the snapshot.
 
-Dependencies, the compiled native helper and private config stay outside the snapshot; native Swift source is included. Point the LaunchAgent at the frozen path rather than an actively edited checkout. Generate and lint the plist without loading it during tests. Its per-user service polls with `StartInterval`, runs at login/load, and uses a restrictive umask. Create its state/log directory before bootstrap. Disable the old Hammerspoon queue scheduler during migration; preserve the existing ledger and button bindings. The manifest identifies the installed revision; it does not establish release approval.
+The compiled native helper and private config stay outside the snapshot; native Swift source is included. Point the LaunchAgent at the frozen path rather than an actively edited checkout. Generate and lint the plist without loading it during tests. Once explicitly activated, its per-user service polls with `StartInterval`, runs at login/load, and uses a restrictive umask. Prepared definitions stay outside launchd's login-discovery directories. Disable any previous queue scheduler during migration; preserve the existing ledger and button bindings. The manifest identifies the installed revision; it does not establish release approval.
 
 The setup CLI builds `native/receiver.swift` into a dedicated native macOS app and passes explicit runtime/config/state paths through LaunchServices. Launchd uses `open -W -g -a` so a pass waits for that app to exit. The app runs the same frozen `consume.sh`, writes private logs, and creates no new capture or task state of its own. This is a privacy-identity boundary, not an additional agent or backend. iCloud access must be proved under this scheduled identity: a foreground CLI may inherit permissions unavailable to a direct launchd shell. Never write the TCC database or disable OS privacy protections to make setup appear successful.
 
@@ -77,6 +76,20 @@ Preparation, import and activation are separate operations. Existing trusted she
 
 ## Verification
 
-The synthetic suite covers archival ordering, transcript persistence, retry/restart/orphan recovery, duplicate extensions, full body readback, source mutation, locks, local model behavior, legacy text compatibility, builder structure, and snapshot identity. It uses explicit mocks where appropriate and does not prove the physical phone.
+The synthetic suite covers archival ordering, transcript persistence, retry/restart/orphan recovery, duplicate extensions, full body readback, source mutation, locks, Apple helper behavior, legacy text recovery, builder structure, and snapshot identity. It uses explicit mocks where appropriate and does not prove the physical phone.
 
-Real audio/transcription plus an isolated real Hermes board is a separate integration check. Shortcut signing/import, editor rendering, Shortcuts sync, microphone permissions, locked-phone launch, long recording, and gateway task execution are separate gates. Use [the phone checklist](phone-tests.md) for the final operator test.
+Run `make check` for isolated tests and source generation; `make native` compiles both Swift executables on a compatible Mac. Tests never download speech assets, import Shortcuts or activate intake. The [setup guide](setup.md#verify-the-real-path) covers physical-phone and worker checks.
+
+For opt-in synthetic long audio, explicitly prepare the compiled helper, then run `NATIVE_SPEECH_PROOF=1 python3 -m unittest discover -s tests -p test_native_speech.py -v`. This uses `say` and ffmpeg, not a microphone. To exercise real native transcription and a real isolated Hermes board:
+
+```sh
+python3 scripts/test_audio_integration.py \
+  --audio .local/native-proof/narration.m4a \
+  --native-bin dist/concodispatch-transcribe \
+  --hermes-bin "$(command -v hermes)" \
+  --expect 'Purple lantern opens this recording' \
+  --expect 'after a quiet pause' \
+  --expect 'Silver compass closes this recording'
+```
+
+Prepare speech assets at the final helper path if `--check` reports them missing. The harness pins isolated `HOME`, `HERMES_HOME`, `HERMES_KANBAN_HOME` and `HERMES_KANBAN_DB`, checks the exact task body and archived audio, then replays without the recognizer and verifies one task. It starts no gateway; signing/import, iCloud sync, microphone/locked-phone permissions and automatic worker execution remain separate proof layers.

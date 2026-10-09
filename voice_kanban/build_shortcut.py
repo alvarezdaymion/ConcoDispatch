@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build shared audio capture and legacy direct-Triage Mac Shortcuts."""
+"""Build shared iPhone and Mac audio capture Shortcuts."""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +9,6 @@ import plistlib
 import uuid
 
 QUEUE_FOLDER = "VoiceKanbanInbox/"
-ENVELOPE_MARKER = "VOICEKANBAN/2"
 
 
 def uid() -> str:
@@ -67,26 +66,16 @@ def workflow_metadata(actions: list[dict]) -> dict:
     }
 
 
-def build_workflow(queue_folder: str = QUEUE_FOLDER,
-                   envelope_marker: str = ENVELOPE_MARKER, capture_mode: str = "audio") -> dict:
-    """Mobile: immediate audio, deliberate Stop, named file, literal iCloud folder."""
-    if capture_mode not in {"audio", "dictation"}:
-        raise ValueError("Capture mode must be audio or dictation")
-    if not envelope_marker or "\n" in envelope_marker or "\r" in envelope_marker:
-        raise ValueError("Envelope marker must be a nonempty single line")
+def build_workflow(queue_folder: str = QUEUE_FOLDER) -> dict:
+    """Immediate audio, deliberate Stop, named file, literal iCloud folder."""
     if not queue_folder or queue_folder.startswith("/") or ".." in queue_folder.split("/"):
         raise ValueError("Queue folder must be relative to iCloud Drive/Shortcuts")
     queue_folder = queue_folder.rstrip("/") + "/"
-    recording, group, date, formatted, random, capture, envelope, named = [uid() for _ in range(8)]
-    output_name = "Recorded Audio" if capture_mode == "audio" else "Dictated Text"
-    capture_action = (action("recordaudio", CustomOutputName=output_name, UUID=recording,
-                            WFRecordingStart="Immediately", WFRecordingEnd="On Tap")
-                      if capture_mode == "audio" else
-                      action("dictatetext", CustomOutputName=output_name, UUID=recording,
-                             WFDictateTextActionStartImmediately=True, WFSpeechLanguage="en-US",
-                             WFDictateTextStopListening="On Tap"))
+    recording, group, date, formatted, random, capture, named = [uid() for _ in range(7)]
+    output_name = "Recorded Audio"
     actions = [
-        capture_action,
+        action("recordaudio", CustomOutputName=output_name, UUID=recording,
+               WFRecordingStart="Immediately", WFRecordingEnd="On Tap"),
         action("conditional", GroupingIdentifier=group, WFCondition=100, WFControlFlowMode=0,
                WFInput={"Type": "Variable", "Variable": output_ref(recording, output_name)}),
         action("date", CustomOutputName="Date", UUID=date, WFDateActionMode="Current Date"),
@@ -99,17 +88,10 @@ def build_workflow(queue_folder: str = QUEUE_FOLDER,
                WFTextActionText=token_string("capture-", (formatted, "Formatted Date"),
                                             "-", (random, "Random Number"))),
     ]
-    if capture_mode == "dictation":
-        actions.append(action("gettext", CustomOutputName="Capture Envelope", UUID=envelope,
-               WFTextActionText=token_string(envelope_marker + "\ncapture_id: ",
-                                            (capture, "Capture ID"), "\ncaptured_at: ",
-                                            (date, "Date"), "\n---\n", (recording, output_name))))
-    named_input = (output_ref(recording, output_name) if capture_mode == "audio"
-                   else output_ref(envelope, "Capture Envelope"))
     actions.extend([
         action("setitemname", CustomOutputName="Named Capture", UUID=named,
-               WFInput=named_input,
-               WFName=token_string((capture, "Capture ID"), ".m4a" if capture_mode == "audio" else ".txt"),
+               WFInput=output_ref(recording, output_name),
+               WFName=token_string((capture, "Capture ID"), ".m4a"),
                WFDontIncludeFileExtension=False),
         action("documentpicker.save", UUID=uid(), WFInput=output_ref(named, "Named Capture"),
                WFAskWhereToSave=False, WFFileStorageService="iCloud Drive",
@@ -118,34 +100,16 @@ def build_workflow(queue_folder: str = QUEUE_FOLDER,
             "Capture ", (capture, "Capture ID"),
             " is saved to the iCloud queue; Kanban confirmation is pending.")),
         action("conditional", GroupingIdentifier=group, WFControlFlowMode=1),
-        notification("Nothing captured", "No queue file was created. Hold the Action Button and try again."),
+        notification("Nothing captured", "No queue file was created. Launch the Shortcut and try again."),
         action("conditional", GroupingIdentifier=group, UUID=uid(), WFControlFlowMode=2),
     ])
     return workflow_metadata(actions)
 
 
-def build_mac_workflow() -> dict:
-    """Mac: Dictate Text -> AppleScript direct triage -> output, no mobile queue."""
-    dictation, script_output = uid(), uid()
-    script = (Path(__file__).resolve().parents[1] / "shortcuts/mac_capture.applescript").read_text()
-    return workflow_metadata([
-        action("dictatetext", WFDictateTextLanguage="en-US", WFDictateTextStopListening="On Tap",
-               CustomOutputName="Dictated Text", UUID=dictation,
-               WFDictateTextActionStartImmediately=True),
-        action("runapplescript", Input=output_ref(dictation, "Dictated Text"),
-               Script=script, UUID=script_output),
-        action("output", WFOutput=token_string((script_output, "AppleScript Result")), UUID=uid()),
-    ])
-
-
-def write_unsigned(path: Path, *, platform: str = "mobile", queue_folder: str = QUEUE_FOLDER,
-                   envelope_marker: str = ENVELOPE_MARKER, capture_mode: str = "audio") -> Path:
-    if platform not in ("mobile", "mac", "mac-audio"):
-        raise ValueError("Platform must be mobile, mac-audio, or legacy mac")
-    if platform == 'mac-audio' and capture_mode != 'audio':
-        raise ValueError('The Mac audio path requires audio capture')
-    workflow = (build_mac_workflow() if platform == "mac" else
-                build_workflow(queue_folder, envelope_marker, capture_mode))
+def write_unsigned(path: Path, *, platform: str = "mobile", queue_folder: str = QUEUE_FOLDER) -> Path:
+    if platform not in ("mobile", "mac-audio"):
+        raise ValueError("Platform must be mobile or mac-audio")
+    workflow = build_workflow(queue_folder)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as handle:
         plistlib.dump(workflow, handle, fmt=plistlib.FMT_BINARY, sort_keys=False)
@@ -154,19 +118,14 @@ def write_unsigned(path: Path, *, platform: str = "mobile", queue_folder: str = 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--platform", choices=("mobile", "mac-audio", "mac"), default="mobile")
-    parser.add_argument("--capture-mode", choices=("audio", "dictation"), default="audio",
-                        help="Mobile capture mode; mac-audio records, mac retains legacy Triage dictation")
+    parser.add_argument("--platform", choices=("mobile", "mac-audio"), default="mobile")
     parser.add_argument("--queue-folder", default=os.environ.get("VOICE_KANBAN_QUEUE_FOLDER", QUEUE_FOLDER),
                         help="Literal folder relative to iCloud Drive/Shortcuts")
-    parser.add_argument("--envelope-marker", default=os.environ.get("VOICE_KANBAN_ENVELOPE_MARKER", ENVELOPE_MARKER))
     parser.add_argument("--output", type=Path)
     arguments = parser.parse_args()
-    shortcut_name = {'mobile': 'ConcoDispatch', 'mac-audio': 'ConcoDispatch Mac',
-                     'mac': 'Hermes Voice Kanban Mac'}[arguments.platform]
+    shortcut_name = {'mobile': 'ConcoDispatch', 'mac-audio': 'ConcoDispatch Mac'}[arguments.platform]
     output = arguments.output or Path("dist") / f"{shortcut_name}.unsigned.shortcut"
-    print(write_unsigned(output, platform=arguments.platform, queue_folder=arguments.queue_folder,
-                         envelope_marker=arguments.envelope_marker, capture_mode=arguments.capture_mode))
+    print(write_unsigned(output, platform=arguments.platform, queue_folder=arguments.queue_folder))
     return 0
 
 
