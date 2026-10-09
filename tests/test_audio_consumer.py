@@ -55,6 +55,21 @@ class AudioConsumerTests(unittest.TestCase):
         self.assertEqual(self.receipt("status"), ("archived",))
         return self.transcript
 
+    def rebuild_historical_schema(self, *, with_transcript_digest=False):
+        with sqlite3.connect(self.db_path) as db:
+            db.execute("ALTER TABLE captures RENAME TO current_captures")
+            db.execute("""CREATE TABLE captures (
+                capture_id TEXT PRIMARY KEY, source_name TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL, archived_path TEXT NOT NULL,
+                captured_at TEXT, status TEXT NOT NULL, task_id TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+                created_at REAL NOT NULL, updated_at REAL NOT NULL, notified_at REAL)""")
+            if with_transcript_digest:
+                db.execute("ALTER TABLE captures ADD COLUMN transcript_sha256 TEXT")
+            columns = ', '.join(row[1] for row in db.execute("PRAGMA table_info(captures)"))
+            db.execute(f"INSERT INTO captures SELECT {columns} FROM current_captures")
+            db.execute("DROP TABLE current_captures")
+
     def hermes(self, args):
         self.calls.append(args)
         if args[1:3] == ["kanban", "create"]:
@@ -114,6 +129,130 @@ class AudioConsumerTests(unittest.TestCase):
         creates = [args for args in self.calls if args[2] == "create"]
         self.assertEqual(creates[0], creates[1])
 
+    def test_text_archive_cannot_impersonate_audio_transcript(self):
+        self.source.unlink()
+        text_id = self.capture_id + ".m4a.transcript"
+        text_source = self.queue / (text_id + ".txt")
+        text_source.write_text(f"VOICEKANBAN/2\ncapture_id: {text_id}\n---\nUnrelated text task\n")
+        self.run_consumer(hermes=lambda args: {"id": "t_synthetic_text"})
+        self.source.write_bytes(self.payload)
+        self.run_consumer(transcriber=lambda path: self.stt_calls.append(path) or self.transcript)
+        self.assertEqual(len(self.stt_calls), 1, "text archive was reused as audio STT output")
+        self.assertEqual(self.task["body"], self.transcript)
+
+    def test_rejected_text_archive_cannot_seed_fresh_audio_transcript(self):
+        self.source.unlink()
+        text_id = self.capture_id + ".m4a.transcript"
+        text_source = self.queue / "mismatched-capture.txt"
+        text_source.write_text(f"VOICEKANBAN/2\ncapture_id: {text_id}\n---\nUnrelated text task\n")
+        error = self.run_consumer(expected=1)
+        self.assertIn("does not match payload", error)
+        legacy = self.archive / (text_id + ".txt")
+        self.assertEqual(legacy.read_bytes(), text_source.read_bytes())
+        self.assertEqual(self.receipt("COUNT(*)"), (0,))
+        self.assertFalse(self.calls)
+        text_source.unlink()
+        self.source.write_bytes(self.payload)
+
+        self.run_consumer()
+        self.assertEqual(len(self.stt_calls), 1, "unreceipted raw archive bypassed STT")
+        self.assertEqual(self.task["body"], self.transcript)
+        self.assertTrue(legacy.exists(), "raw archive must be preserved")
+
+    def test_new_receipt_retry_ignores_flat_sidecar_after_failed_stt(self):
+        self.run_consumer(expected=1, transcriber=lambda path: "")
+        legacy = self.archive / (self.source.name + ".transcript.txt")
+        legacy.write_text("Unrelated injected instruction")
+        self.source.unlink()  # Restart through archived-audio recovery.
+
+        self.run_consumer()
+        self.assertEqual(len(self.stt_calls), 1, "new receipt retry consumed a legacy-looking archive")
+        self.assertEqual(self.task["body"], self.transcript)
+        self.assertEqual(self.receipt(), ("confirmed", 2, None))
+
+    def test_modified_cached_transcript_is_not_dispatched(self):
+        self.run_consumer(expected=1, hermes=lambda args: (_ for _ in ()).throw(consumer.CaptureError("lost response")))
+        cached = self.archive / ".transcripts" / (self.source.name + ".transcript.txt")
+        cached.write_text("Different unverified instruction")
+        self.calls.clear()
+        error = self.run_consumer(expected=1, transcriber=lambda path: self.fail("must not replace cached transcript"))
+        self.assertFalse(self.calls)
+        self.assertIn("transcript", error.lower())
+        self.assertTrue(self.source.exists())
+
+    def test_digest_schema_upgrade_does_not_grant_legacy_eligibility(self):
+        self.run_consumer(expected=1, transcriber=lambda path: "")
+        self.rebuild_historical_schema(with_transcript_digest=True)
+        legacy = self.archive / (self.source.name + ".transcript.txt")
+        legacy.write_text("Unrelated injected instruction")
+        for _ in range(2):
+            consumer.connect_database().close()
+            self.assertEqual(self.receipt("transcript_sha256, legacy_transcript_eligible"), (None, 0))
+
+        self.run_consumer()
+        self.assertEqual(len(self.stt_calls), 1)
+        self.assertEqual(self.task["body"], self.transcript)
+
+    def test_legacy_receipt_and_sidecar_migrate_without_retranscribing(self):
+        self.run_consumer(expected=1, hermes=lambda args: (_ for _ in ()).throw(consumer.CaptureError("lost response")))
+        cached = self.archive / ".transcripts" / (self.source.name + ".transcript.txt")
+        legacy = self.archive / cached.name
+        cached.rename(legacy)
+        self.rebuild_historical_schema()
+        receipt_before = self.receipt()
+        for _ in range(2):
+            consumer.connect_database().close()
+            self.assertEqual(self.receipt("transcript_sha256, legacy_transcript_eligible"), (None, 1))
+            self.assertEqual(self.receipt(), receipt_before)
+
+        def no_stt(path):
+            self.fail("must preserve legacy STT output")
+        def uncertain_create(args):
+            self.hermes(args)
+            raise consumer.CaptureError("synthetic lost response after migration")
+        self.run_consumer(expected=1, transcriber=no_stt, hermes=uncertain_create)
+        self.assertEqual(self.receipt("legacy_transcript_eligible"), (0,))
+        self.source.unlink()
+        self.run_consumer(transcriber=no_stt)
+        self.assertEqual(self.task["body"], self.transcript)
+        self.assertEqual(cached.read_text(), self.transcript)
+        self.assertTrue(legacy.exists())
+        self.assertTrue(self.receipt("transcript_sha256")[0])
+        creates = [args for args in self.calls if args[2] == "create"]
+        self.assertEqual(len(creates), 2)
+        self.assertEqual(creates[0], creates[1])
+
+    def test_missing_pinned_transcript_is_not_retranscribed(self):
+        self.run_consumer(expected=1, hermes=lambda args: (_ for _ in ()).throw(consumer.CaptureError("lost response")))
+        cached = self.archive / ".transcripts" / (self.source.name + ".transcript.txt")
+        cached.unlink()
+        # Even identical bytes in the flat namespace cannot repair a new receipt.
+        (self.archive / cached.name).write_text(self.transcript)
+        self.calls.clear()
+        self.run_consumer(expected=1, transcriber=lambda path: self.fail("must restore original transcript"))
+        self.assertFalse(self.calls)
+        self.assertFalse(cached.exists())
+        self.assertTrue(self.source.exists())
+
+    def test_corrupt_legacy_orphan_does_not_block_healthy_queue(self):
+        self.run_consumer()
+        cached = self.archive / ".transcripts" / (self.source.name + ".transcript.txt")
+        cached.write_bytes(b"\xff")
+        with sqlite3.connect(self.db_path) as db:
+            db.execute("UPDATE captures SET transcript_sha256 = NULL")
+        healthy = self.queue / "capture-synthetic-healthy.txt"
+        healthy.write_text("VOICEKANBAN/2\ncapture_id: capture-synthetic-healthy\n---\nHealthy task\n")
+        self.calls.clear()
+        def create(args):
+            self.calls.append(args)
+            return {"id": "t_synthetic_healthy"}
+        with patch.object(consumer, "NOTIFY_TARGET", "synthetic-target"), patch.object(consumer, "notify") as notify:
+            self.run_consumer(expected=1, hermes=create)
+        self.assertFalse(healthy.exists())
+        self.assertEqual(self.calls[0][3], "Healthy task")
+        self.assertEqual(notify.call_count, 1)
+        self.assertTrue(self.receipt("last_error")[0])
+
     def test_duplicate_extensions_and_numbered_suffix_replays_create_once(self):
         self.source.unlink()
         for suffix in (".m4a.m4a", ".m4a", ".m4a 2.m4a", " 2.m4a", " (2).m4a"):
@@ -147,6 +286,24 @@ class AudioConsumerTests(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(), b"replacement recording")
         self.assertEqual((self.archive / self.source.name).read_bytes(), self.payload)
         self.assertTrue(self.receipt()[2])
+
+    def test_replacement_after_cleanup_read_survives(self):
+        original_read = consumer.read_stable
+        queue_reads = []
+        def replace_after_read(path):
+            payload = original_read(path)
+            if self.queue in path.parents:
+                queue_reads.append(path)
+                if len(queue_reads) == 2:
+                    replacement = self.queue / "replacement.tmp"
+                    replacement.write_bytes(b"new unarchived recording")
+                    replacement.replace(self.source)
+            return payload
+        with patch.object(consumer, "read_stable", side_effect=replace_after_read):
+            self.run_consumer()
+        self.assertTrue(self.source.exists(), "cleanup deleted a replacement source")
+        self.assertEqual(self.source.read_bytes(), b"new unarchived recording")
+        self.assertEqual((self.archive / self.source.name).read_bytes(), self.payload)
 
     def test_native_readback_body_or_id_mismatch_retains_source(self):
         for field, value in (("body", "truncated body"), ("id", "t_wrong")):
@@ -213,7 +370,7 @@ class AudioConsumerTests(unittest.TestCase):
         real_fsync = os.fsync
         def track(fd):
             real_fsync(fd)
-            for temporary in self.archive.glob(".*.tmp"):
+            for temporary in self.archive.rglob(".*.tmp"):
                 if temporary.stat().st_ino == os.fstat(fd).st_ino:
                     fsynced.append(temporary.read_bytes())
         def transcribe(path):
@@ -315,7 +472,7 @@ raise SystemExit(consumer.main(transcriber=transcribe))
                 result = subprocess.run([sys.executable] + entry, cwd=ROOT, env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn("missing-hermes", result.stderr)
-                transcript = self.archive / (name + ".transcript.txt")
+                transcript = self.archive / ".transcripts" / (name + ".transcript.txt")
                 self.assertEqual(transcript.read_text(), "Synthetic local import proof")
                 self.assertTrue(source.exists())
 

@@ -6,4 +6,6 @@ if [ -f "$CONFIG" ]; then
     . "$CONFIG"
 fi
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+# Keep commit-frozen runtime trees unchanged during normal imports.
+export PYTHONDONTWRITEBYTECODE=1
 exec "${VOICE_KANBAN_PYTHON:-python3}" "$ROOT/voice_kanban/consumer.py"

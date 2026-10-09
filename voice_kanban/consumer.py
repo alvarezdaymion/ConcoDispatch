@@ -14,6 +14,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any, Callable
 
@@ -71,6 +72,35 @@ def read_stable(path: Path) -> bytes:
     return payload
 
 
+def remove_unchanged_source(path: Path, digest: str) -> None:
+    # Claim the directory entry first; a later sync replacement at the original
+    # pathname must never become the file we unlink.
+    claimed_dir = Path(tempfile.mkdtemp(prefix=".cleanup-", dir=path.parent))
+    claimed = claimed_dir / path.name
+    try:
+        try:
+            path.rename(claimed)
+        except FileNotFoundError:
+            return
+        try:
+            if hashlib.sha256(read_stable(claimed)).hexdigest() != digest:
+                raise CaptureError(f"Capture {path.name} changed after local archival; source retained")
+        except (OSError, CaptureError) as error:
+            try:
+                # A hard link restores without overwriting a concurrent arrival.
+                os.link(claimed, path, follow_symlinks=False)
+                claimed.unlink()
+            except OSError:
+                raise CaptureError(f"Source retained for manual recovery at {claimed}") from error
+            raise
+        claimed.unlink()
+    finally:
+        try:
+            claimed_dir.rmdir()
+        except OSError:
+            pass  # A crash or concurrent arrival can require manual recovery.
+
+
 def audio_capture_id(path: Path) -> str:
     # Shortcuts can append the extension twice; Files can add a numbered copy
     # suffix. Strip only these suffix forms, never arbitrary ID characters.
@@ -124,6 +154,9 @@ def connect_database() -> sqlite3.Connection:
     database = sqlite3.connect(DATABASE_PATH)
     database.execute("PRAGMA journal_mode=WAL")
     database.execute("PRAGMA synchronous=FULL")
+    # Capture historical eligibility atomically with the schema upgrade. A
+    # later restart must never reclassify newly inserted audio receipts as old.
+    database.execute("BEGIN IMMEDIATE")
     database.execute("""
         CREATE TABLE IF NOT EXISTS captures (
             capture_id TEXT PRIMARY KEY,
@@ -140,6 +173,25 @@ def connect_database() -> sqlite3.Connection:
             notified_at REAL
         )
     """)
+    columns = {row[1] for row in database.execute("PRAGMA table_info(captures)")}
+    if "legacy_transcript_eligible" not in columns:
+        database.execute("ALTER TABLE captures ADD COLUMN legacy_transcript_eligible INTEGER NOT NULL DEFAULT 0")
+        if "transcript_sha256" not in columns:
+            # Only pre-namespace audio receipts can own a flat legacy cache.
+            # Ledgers already using transcript digests cannot establish this
+            # provenance, even when an individual receipt has no digest yet.
+            for capture_id, source_name, archived_path in database.execute(
+                "SELECT capture_id, source_name, archived_path FROM captures"
+            ).fetchall():
+                if (Path(source_name).suffix.lower() in AUDIO_SUFFIXES
+                        and Path(archived_path).suffix.lower() in AUDIO_SUFFIXES):
+                    database.execute(
+                        "UPDATE captures SET legacy_transcript_eligible = 1 WHERE capture_id = ?",
+                        (capture_id,),
+                    )
+    if "transcript_sha256" not in columns:
+        database.execute("ALTER TABLE captures ADD COLUMN transcript_sha256 TEXT")
+    database.commit()
     return database
 
 
@@ -172,6 +224,47 @@ def write_durable(destination: Path, payload: bytes) -> None:
             os.close(descriptor)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def audio_transcript_path(database: sqlite3.Connection, capture_id: str, archive: Path) -> Path:
+    directory = ARCHIVE_DIR / ".transcripts"
+    if directory.is_symlink():
+        raise CaptureError("Refusing symlink transcript directory")
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / (archive.name + ".transcript.txt")
+    legacy = archive.with_name(archive.name + ".transcript.txt")
+    receipt = database.execute(
+        "SELECT legacy_transcript_eligible FROM captures WHERE capture_id = ? AND archived_path = ?",
+        (capture_id, str(archive)),
+    ).fetchone()
+    if (receipt and receipt[0] == 1 and not destination.exists()
+            and not destination.is_symlink() and legacy.exists()):
+        # Preserve old caches, but never mistake another receipt's raw text
+        # archive for transcription output.
+        owner = database.execute("SELECT 1 FROM captures WHERE archived_path = ?", (str(legacy),)).fetchone()
+        if owner is None:
+            write_durable(destination, read_stable(legacy))
+    return destination
+
+
+def read_audio_transcript(database: sqlite3.Connection, capture_id: str, path: Path) -> str:
+    payload = read_stable(path)
+    digest = hashlib.sha256(payload).hexdigest()
+    expected = database.execute("SELECT transcript_sha256 FROM captures WHERE capture_id = ?", (capture_id,)).fetchone()[0]
+    if expected is not None and digest != expected:
+        raise CaptureError(f"Audio transcript does not match receipt: {capture_id}")
+    transcript = payload.decode("utf-8")
+    if not transcript.strip():
+        raise CaptureError("Durable audio transcript is empty")
+    if expected is None:
+        # Pin fresh STT or an eligible historical cache; once bound, a missing
+        # namespaced cache must not be replaced by a flat sidecar on retry.
+        database.execute("""
+            UPDATE captures SET transcript_sha256 = ?, legacy_transcript_eligible = 0
+            WHERE capture_id = ?
+        """, (digest, capture_id))
+        database.commit()
+    return transcript
 
 
 def notify(capture_id: str, task_id: str, transcript: str) -> None:
@@ -230,8 +323,8 @@ def _process_capture(database: sqlite3.Connection, path: Path,
         database.execute("""
             INSERT INTO captures (
                 capture_id, source_name, payload_sha256, archived_path,
-                captured_at, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, 'archived', ?, ?)
+                captured_at, status, created_at, updated_at, legacy_transcript_eligible
+            ) VALUES (?, ?, ?, ?, ?, 'archived', ?, ?, 0)
         """, (capture_id, path.name, digest, str(archive_path), captured_at, now, now))
         database.commit()
         status, task_id, notified_at = "archived", None, None
@@ -241,7 +334,7 @@ def _process_capture(database: sqlite3.Connection, path: Path,
         if archive_path.parent != ARCHIVE_DIR or hashlib.sha256(read_stable(archive_path)).hexdigest() != digest:
             raise CaptureError(f"Archived payload does not match receipt: {capture_id}")
 
-    transcript_path = archive_path.with_name(archive_path.name + ".transcript.txt")
+    transcript_path = audio_transcript_path(database, capture_id, archive_path) if audio else None
     if status != "confirmed":
         database.execute(
             "UPDATE captures SET attempts = attempts + 1, updated_at = ? WHERE capture_id = ?",
@@ -249,9 +342,13 @@ def _process_capture(database: sqlite3.Connection, path: Path,
         )
         database.commit()
     if audio:
+        assert transcript_path is not None
         if transcript_path.exists() or transcript_path.is_symlink():
-            transcript = read_stable(transcript_path).decode("utf-8")
+            transcript = read_audio_transcript(database, capture_id, transcript_path)
         elif status != "confirmed":
+            expected = database.execute("SELECT transcript_sha256 FROM captures WHERE capture_id = ?", (capture_id,)).fetchone()[0]
+            if expected is not None:
+                raise CaptureError("Durable audio transcript is missing; restore the original cache")
             if transcriber is None:
                 if __package__:
                     from .transcribe import transcribe_audio
@@ -265,6 +362,7 @@ def _process_capture(database: sqlite3.Connection, path: Path,
             if not isinstance(transcript, str) or not transcript.strip():
                 raise CaptureError("Audio transcript is empty")
             write_durable(transcript_path, transcript.encode("utf-8"))
+            transcript = read_audio_transcript(database, capture_id, transcript_path)
         if not transcript.strip():
             raise CaptureError("Durable audio transcript is missing or empty")
 
@@ -303,10 +401,7 @@ def _process_capture(database: sqlite3.Connection, path: Path,
 
     path = source_path if source_path is not None else path
     if path.exists() or path.is_symlink():
-        current_payload = read_stable(path)
-        if hashlib.sha256(current_payload).hexdigest() != digest:
-            raise CaptureError(f"Capture {capture_id} changed after local archival; source retained")
-        path.unlink()
+        remove_unchanged_source(path, digest)
     return str(task_id)
 
 
@@ -326,7 +421,7 @@ def retry_orphaned_notifications(database: sqlite3.Connection) -> int:
         try:
             archive = Path(archived_path)
             if archive.suffix.lower() in AUDIO_SUFFIXES:
-                transcript = read_stable(archive.with_name(archive.name + ".transcript.txt")).decode("utf-8")
+                transcript = read_audio_transcript(database, capture_id, audio_transcript_path(database, capture_id, archive))
             else:
                 _, transcript, _ = parse_envelope(read_stable(archive), source_name)
             notify(capture_id, task_id, transcript)
@@ -336,8 +431,11 @@ def retry_orphaned_notifications(database: sqlite3.Connection) -> int:
             )
             database.commit()
             print(f"Delivered pending receipt for {capture_id} as {task_id}")
-        except (OSError, subprocess.CalledProcessError, CaptureError) as error:
+        except (OSError, sqlite3.Error, subprocess.CalledProcessError, ValueError, CaptureError) as error:
             failures += 1
+            database.execute("UPDATE captures SET last_error = ?, updated_at = ? WHERE capture_id = ?",
+                             (str(error), time.time(), capture_id))
+            database.commit()
             print(f"Voice receipt retry failed for {capture_id}: {error}", file=sys.stderr)
     return failures
 
