@@ -11,6 +11,13 @@
 - A queued notification must not imply Kanban confirmation.
 - Use home-relative defaults and `VOICE_KANBAN_*` configuration. Preserve existing receipt ledgers when updating.
 
+## When asked to set this up
+
+- Read `docs/setup.md`, run `python3 scripts/setup.py --check`, and resolve the reported prerequisites using official tools/docs. Reuse the user's configured Hermes and Apple accounts; stop for owner authentication or phone-only confirmations. Never ask for secrets in chat.
+- Use the explicit setup CLI preparation, import and activation phases. Preparation alone must not load a service, import a Shortcut, submit a test task or restart the Hermes gateway. A setup request permits the agent to perform these phases deliberately, after inspecting the actual queue and routing.
+- Preserve existing configuration bytes, receipt state, recordings and same-named Shortcut identities. Refuse unsupported upgrades rather than silently changing backends, routing or button bindings. Do not overwrite a running receiver's code.
+- Verify iCloud access under the scheduled native app identity, exact full task body and real worker kickoff. Queued notifications, compilation, fake homes and mocked tools are not physical-phone proof. Use a harmless diagnostic request only when its real execution is authorized.
+
 ## Verification
 
 - Run `make check` before submitting a change. On macOS, also compile the AppleScript without running it: `osacompile -o .local/mac_capture.scpt shortcuts/mac_capture.applescript`.

@@ -8,6 +8,8 @@ ConcoDispatch turns queue files into agent tasks. Treat the queue, receiver conf
 - The local archive retains recordings and transcript sidecars indefinitely. SQLite receipts store task identifiers and processing errors. Task bodies also persist in the configured Kanban system.
 - Keep state outside the checkout, restrict access with filesystem permissions, and consider backups part of the same data boundary. The receiver does not encrypt or automatically purge these files.
 - `config.sh` is executable shell configuration. Source only trusted files and keep notification destinations private.
+- Setup builds a dedicated locally signed receiver app for macOS file-access consent. Grant only that app's required access through the normal OS flow. Compilation and interactive CLI access do not prove launchd's privacy permissions; never write TCC records or grant blanket shell/Python access to bypass a failure.
+- Preparation does not activate intake or import Shortcuts. Activation can process existing queued work and historical optional notifications; inspect those inputs and agent permissions first. Back up an existing app/helper/definition before an approved stopped-service upgrade, leaving config, archives and receipts intact.
 - Optional notifications contain a short transcript summary. Enabling a destination can deliver historical, previously unnotified confirmations. Sends occur after intake/cleanup and use bounded CLI calls.
 - Ignore rules prevent accidental staging of common runtime files; they do not remove already tracked data or sanitize recordings.
 
