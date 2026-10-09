@@ -25,4 +25,14 @@ A physical phone button turns a spoken explanation into an actionable agent task
 
 Use a dedicated synthetic task and recording. Avoid real boards, personal task titles, account/device identifiers, contacts, local paths, recordings, and receipt destinations on screen. Blur interface identifiers before publishing if a clean demo environment cannot be used.
 
+## A clean demo sequence
+
+1. Show only the phone's ConcoDispatch recording interface, with notifications and personal UI hidden. Use a harmless request to acknowledge a demonstration, not a business action.
+2. Say a distinct opening phrase, explain the test naturally, pause deliberately, then say a distinct closing phrase and tap Stop. For a long-form claim, record the full several-minute take; a cut around the pause is not proof of continuity.
+3. Show the queued notification without presenting it as delivery confirmation. If the edit skips sync/processing time, label the cut rather than implying instantaneous dispatch.
+4. Show only the demonstration card's complete body and actual worker result. Crop other tasks, account names, IDs and machine paths. Confirm the final transcript sentence with the speaker.
+5. Keep raw evidence privately. Publish only the sanitized clip. Describe synthetic local transcription tests, actual phone capture and clean-install checks as different proof layers.
+
+Before sharing the source, verify the delivered commit's tests, setup instructions, history/metadata privacy, license and prerequisites. A successful installation on an already configured Mac is not proof of a brand-new Apple account or a fresh operating-system permission state.
+
 This is a demonstration checklist, not evidence that physical-phone acceptance tests have passed.

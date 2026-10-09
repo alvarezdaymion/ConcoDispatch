@@ -71,6 +71,10 @@ Historical caches have no prior digest, so migration cannot detect modifications
 
 Dependencies, the compiled native helper and private config stay outside the snapshot; native Swift source is included. Point the LaunchAgent at the frozen path rather than an actively edited checkout. Generate and lint the plist without loading it during tests. Its per-user service polls with `StartInterval`, runs at login/load, and uses a restrictive umask. Create its state/log directory before bootstrap. Disable the old Hammerspoon queue scheduler during migration; preserve the existing ledger and button bindings. The manifest identifies the installed revision; it does not establish release approval.
 
+The setup CLI builds `native/receiver.swift` into a dedicated native macOS app and passes explicit runtime/config/state paths through LaunchServices. Launchd uses `open -W -g -a` so a pass waits for that app to exit. The app runs the same frozen `consume.sh`, writes private logs, and creates no new capture or task state of its own. This is a privacy-identity boundary, not an additional agent or backend. iCloud access must be proved under this scheduled identity: a foreground CLI may inherit permissions unavailable to a direct launchd shell. Never write the TCC database or disable OS privacy protections to make setup appear successful.
+
+Preparation, import and activation are separate operations. Existing trusted shell configuration remains authoritative; upgrades must preserve its bytes and the associated queue/ledger. Source-generation tests remain isolated and cannot establish device permission or clean-machine usability.
+
 ## Verification
 
 The synthetic suite covers archival ordering, transcript persistence, retry/restart/orphan recovery, duplicate extensions, full body readback, source mutation, locks, local model behavior, legacy text compatibility, builder structure, and snapshot identity. It uses explicit mocks where appropriate and does not prove the physical phone.
