@@ -21,6 +21,12 @@ You'll need:
 - macOS 26 or later. Setup checks support for your Mac and language.
 - Hermes installed and configured to run tasks automatically.
 
+**Fastest: paste one prompt.** Open your AI coding assistant on your Mac and paste:
+
+> Clone https://github.com/alvarezdaymion/ConcoDispatch into my home folder, then set up ConcoDispatch so I can speak tasks from my iPhone to Hermes. Follow AGENTS.md and docs/setup.md. Use my existing Hermes setup, preserve existing recordings and Shortcuts, and verify a test task reaches the agent.
+
+Then finish the device prompts in step 3. Or go step by step:
+
 **1. Clone this repo on your Mac.**
 
 ```sh
