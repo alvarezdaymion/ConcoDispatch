@@ -2,6 +2,7 @@
 """Durably bridge queued audio and legacy dictation into Hermes Kanban."""
 from __future__ import annotations
 
+import argparse
 from contextlib import closing
 import fcntl
 import hashlib
@@ -62,17 +63,20 @@ def run_json(arguments: list[str]) -> Any:
     return json.loads(completed.stdout)
 
 
-def capture_route() -> dict:
-    if not ASSIGNEE:
-        raise CaptureError('A capture requires an explicit assignee')
-    return {'board': BOARD, 'profile': PROFILE, 'assignee': ASSIGNEE}
+def capture_route(*, historical: bool = False) -> dict:
+    route = read_route(json.dumps({'board': BOARD, 'profile': PROFILE, 'assignee': ASSIGNEE}))
+    if not historical and (not route['board'] or not route['profile']):
+        raise CaptureError('New captures require explicit VOICE_KANBAN_BOARD and VOICE_KANBAN_PROFILE')
+    return route
 
 
 def read_route(encoded: str) -> dict:
     route = json.loads(encoded)
     if (not isinstance(route, dict)
             or any(not isinstance(route.get(key), str) for key in ('board', 'profile', 'assignee'))
-            or not route['assignee'].strip()):
+            or not route['assignee']
+            or any(value != value.strip() or value.startswith('-') or any(c in value for c in '\r\n\0')
+                   for value in (route['board'], route['profile'], route['assignee']))):
         raise CaptureError('Invalid saved capture routing; restore the original receipt')
     return route
 
@@ -237,6 +241,14 @@ def connect_database() -> sqlite3.Connection:
                     )
     if "transcript_sha256" not in columns:
         database.execute("ALTER TABLE captures ADD COLUMN transcript_sha256 TEXT")
+    if "notification_attempted_at" not in columns:
+        database.execute("ALTER TABLE captures ADD COLUMN notification_attempted_at REAL")
+        # Older unnotified confirmations cannot establish whether a send occurred.
+        database.execute("""
+            UPDATE captures SET notification_attempted_at = ?,
+                last_error = COALESCE(last_error, 'Historical notification requires delivery reconciliation')
+            WHERE status = 'confirmed' AND notified_at IS NULL
+        """, (time.time(),))
     database.commit()
     return database
 
@@ -377,7 +389,7 @@ def _process_capture(database: sqlite3.Connection, path: Path,
         status, task_id = "archived", None
     else:
         _, status, task_id, saved_archive, routing_json = existing
-        route = read_route(routing_json) if routing_json is not None else capture_route()
+        route = read_route(routing_json) if routing_json is not None else capture_route(historical=True)
         if routing_json is None:
             # Historical receipts have no routing evidence; retain their original
             # board/profile configuration for the first upgraded processing pass.
@@ -454,21 +466,34 @@ def retry_orphaned_notifications(database: sqlite3.Connection) -> int:
         return 0
     failures = 0
     rows = database.execute("""
-        SELECT capture_id, task_id, source_name, archived_path, routing_json
+        SELECT capture_id, task_id, source_name, archived_path, routing_json, payload_sha256
         FROM captures
         WHERE status = 'confirmed' AND notified_at IS NULL AND task_id IS NOT NULL
+            AND notification_attempted_at IS NULL
         ORDER BY created_at
     """).fetchall()
-    for capture_id, task_id, source_name, archived_path, routing_json in rows:
-        if (QUEUE_DIR / source_name).exists():
+    for capture_id, task_id, source_name, archived_path, routing_json, digest in rows:
+        source = QUEUE_DIR / source_name
+        if source.exists() or source.is_symlink():
             continue
         try:
             archive = Path(archived_path)
+            if (archive.parent != ARCHIVE_DIR or Path(source_name).name != source_name
+                    or hashlib.sha256(read_stable(archive)).hexdigest() != digest):
+                raise CaptureError('Archived notification payload does not match receipt')
             if archive.suffix.lower() in AUDIO_SUFFIXES:
                 transcript = read_audio_transcript(database, capture_id, audio_transcript_path(database, capture_id, archive))
             else:
                 _, transcript, _ = parse_envelope(read_stable(archive), source_name)
-            profile = read_route(routing_json)['profile'] if routing_json is not None else PROFILE
+            profile = (read_route(routing_json) if routing_json is not None
+                       else capture_route(historical=True))['profile']
+            attempted = database.execute("""
+                UPDATE captures SET notification_attempted_at = ?, updated_at = ?
+                WHERE capture_id = ? AND notified_at IS NULL AND notification_attempted_at IS NULL
+            """, (time.time(), time.time(), capture_id))
+            database.commit()
+            if attempted.rowcount != 1:
+                continue
             notify(capture_id, task_id, transcript, profile=profile)
             database.execute(
                 "UPDATE captures SET notified_at = ?, updated_at = ? WHERE capture_id = ?",
@@ -519,7 +544,12 @@ def consume_queue(transcriber: Callable[[Path], str] | None) -> int:
     return 1 if failures else 0
 
 
-def main(transcriber: Callable[[Path], str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, transcriber: Callable[[Path], str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--execute', action='store_true', help='Process captures and pending notifications')
+    modes.add_argument('--dry-run', action='store_true', help='Inspect queue entries without changing state (default)')
+    args = parser.parse_args(argv)
     try:
         queue, state = QUEUE_DIR.resolve(), STATE_DIR.resolve()
         if queue == state or queue in state.parents or state in queue.parents:
@@ -530,6 +560,9 @@ def main(transcriber: Callable[[Path], str] | None = None) -> int:
                 raise CaptureError(f"Refusing symlink state path: {path.name}")
         if QUEUE_DIR.is_symlink():
             raise CaptureError("Refusing symlink queue directory")
+        if not args.execute:
+            print(f'{len(queue_files())} queued capture(s); inspection only. Use --execute to process.')
+            return 0
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         with os.fdopen(os.open(STATE_DIR / "consumer.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600), "a") as lock:
             try:

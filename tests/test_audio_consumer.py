@@ -18,6 +18,39 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AudioConsumerTests(unittest.TestCase):
+    def test_notification_crash_after_delivery_does_not_repeat(self):
+        with patch.object(consumer, 'NOTIFY_TARGET', 'synthetic-target'), \
+                patch.object(consumer, 'notify', side_effect=SystemExit(17)) as notify:
+            with self.assertRaises(SystemExit):
+                self.run_consumer()
+        self.assertEqual(notify.call_count, 1)
+        self.assertFalse(self.source.exists())
+        attempted, notified = self.receipt('notification_attempted_at, notified_at')
+        self.assertIsNotNone(attempted)
+        self.assertIsNone(notified)
+        with patch.object(consumer, 'NOTIFY_TARGET', 'changed-target'), \
+                patch.object(consumer, 'notify') as notify:
+            self.run_consumer()
+        notify.assert_not_called()
+
+    def test_saved_implicit_routing_is_preserved_on_legacy_retry(self):
+        self.run_consumer(expected=1, hermes=lambda args: (_ for _ in ()).throw(consumer.CaptureError('lost response')))
+        with sqlite3.connect(self.db_path) as db:
+            db.execute('UPDATE captures SET routing_json = ?',
+                       ('{"board":"","profile":"","assignee":"default"}',))
+        attempts = []
+        def retry(args):
+            attempts.append(args)
+            self.assertNotIn('--board', args)
+            self.assertNotIn('--profile', args)
+            if 'create' in args:
+                return {'id': 't_synthetic_legacy'}
+            return {'task': {'id': 't_synthetic_legacy', 'body': self.transcript}}
+        with patch.object(consumer, 'BOARD', ''), patch.object(consumer, 'PROFILE', ''):
+            self.run_consumer(hermes=retry)
+        self.assertEqual(len(attempts), 2)
+        self.assertFalse(self.source.exists())
+
     def test_bad_saved_routing_does_not_block_healthy_capture(self):
         self.run_consumer(expected=1, hermes=lambda args: (_ for _ in ()).throw(consumer.CaptureError('lost response')))
         for index, encoded in enumerate(('[]', '{}', '{"board":1,"profile":"","assignee":"default"}')):
@@ -77,7 +110,7 @@ class AudioConsumerTests(unittest.TestCase):
         for name, value in dict(QUEUE_DIR=self.queue, STATE_DIR=self.state,
                                 ARCHIVE_DIR=self.archive, DATABASE_PATH=self.db_path,
                                 NOTIFY_TARGET="", HERMES="synthetic-hermes",
-                                BOARD='', PROFILE='', ASSIGNEE='default').items():
+                                BOARD='synthetic-board', PROFILE='synthetic-profile', ASSIGNEE='default').items():
             patcher = patch.object(consumer, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -118,17 +151,18 @@ class AudioConsumerTests(unittest.TestCase):
 
     def hermes(self, args):
         self.calls.append(args)
-        if args[1:3] == ["kanban", "create"]:
+        if "create" in args:
             body = Path(args[args.index("--body-file") + 1]).read_text()
             self.task = {"id": "t_synthetic_audio", "body": body}
             return {"id": self.task["id"]}
-        self.assertEqual(args, ["synthetic-hermes", "kanban", "show", self.task["id"], "--json"])
+        self.assertEqual(args, ["synthetic-hermes", "--profile", "synthetic-profile", "kanban",
+                                "--board", "synthetic-board", "show", self.task["id"], "--json"])
         return {"task": self.task.copy()}
 
     def run_consumer(self, expected=0, transcriber=None, hermes=None):
         stderr = io.StringIO()
         with patch.object(consumer, "run_json", side_effect=hermes or self.hermes), redirect_stdout(io.StringIO()), redirect_stderr(stderr):
-            result = consumer.main(transcriber=transcriber or self.transcribe)
+            result = consumer.main(["--execute"], transcriber=transcriber or self.transcribe)
         self.assertEqual(result, expected, stderr.getvalue())
         return stderr.getvalue()
 
@@ -138,7 +172,7 @@ class AudioConsumerTests(unittest.TestCase):
         self.assertEqual((self.archive / self.source.name).read_bytes(), self.payload)
         self.assertEqual(self.task["body"], self.transcript)
         self.assertTrue(self.task["body"].endswith("Closing violet lighthouse"))
-        self.assertEqual(self.calls[0][3], "Opening amber telescope")
+        self.assertEqual(self.calls[0][self.calls[0].index("create") + 1], "Opening amber telescope")
         self.assertEqual(self.calls[0][self.calls[0].index("--assignee") + 1], "default")
         self.assertEqual(self.calls[0][self.calls[0].index("--created-by") + 1], "iphone-voice-capture")
         self.assertEqual(self.calls[0][self.calls[0].index("--idempotency-key") + 1], "iphone-voice-capture:" + self.capture_id)
@@ -172,7 +206,7 @@ class AudioConsumerTests(unittest.TestCase):
         self.assertEqual(self.receipt(), ("confirmed", 2, None))
         self.assertEqual(self.task["body"], self.transcript)
         self.assertTrue((self.archive / self.source.name).exists())
-        creates = [args for args in self.calls if args[2] == "create"]
+        creates = [args for args in self.calls if "create" in args]
         self.assertEqual(creates[0], creates[1])
 
     def test_text_archive_cannot_impersonate_audio_transcript(self):
@@ -264,7 +298,7 @@ class AudioConsumerTests(unittest.TestCase):
         self.assertEqual(cached.read_text(), self.transcript)
         self.assertTrue(legacy.exists())
         self.assertTrue(self.receipt("transcript_sha256")[0])
-        creates = [args for args in self.calls if args[2] == "create"]
+        creates = [args for args in self.calls if "create" in args]
         self.assertEqual(len(creates), 2)
         self.assertEqual(creates[0], creates[1])
 
@@ -295,7 +329,7 @@ class AudioConsumerTests(unittest.TestCase):
         with patch.object(consumer, "NOTIFY_TARGET", "synthetic-target"), patch.object(consumer, "notify") as notify:
             self.run_consumer(expected=1, hermes=create)
         self.assertFalse(healthy.exists())
-        self.assertEqual(self.calls[0][3], "Healthy task")
+        self.assertEqual(self.calls[0][self.calls[0].index("create") + 1], "Healthy task")
         self.assertEqual(notify.call_count, 1)
         self.assertTrue(self.receipt("last_error")[0])
 
@@ -307,7 +341,7 @@ class AudioConsumerTests(unittest.TestCase):
             self.run_consumer()
             self.assertFalse(duplicate.exists())
         self.assertEqual(len(self.stt_calls), 1)
-        self.assertEqual(sum(args[2] == "create" for args in self.calls), 1)
+        self.assertEqual(sum("create" in args for args in self.calls), 1)
         self.assertEqual(self.receipt("COUNT(*)"), (1,))
 
     def test_all_audio_suffixes_and_long_first_line(self):
@@ -320,7 +354,7 @@ class AudioConsumerTests(unittest.TestCase):
                 self.run_consumer(transcriber=lambda archived: self.transcript)
                 self.assertFalse(path.exists())
                 self.assertTrue((self.archive / path.name).exists())
-                self.assertEqual(self.calls[-2][3], "A" * 120)
+                self.assertEqual(self.calls[-2][self.calls[-2].index("create") + 1], "A" * 120)
                 self.assertEqual(self.task["body"], self.transcript)
 
     def test_modified_source_is_not_deleted(self):
@@ -356,7 +390,7 @@ class AudioConsumerTests(unittest.TestCase):
             with self.subTest(field=field):
                 def mismatch(args):
                     response = self.hermes(args)
-                    if args[2] == "show":
+                    if "show" in args:
                         response["task"][field] = value
                     return response
                 self.run_consumer(expected=1, hermes=mismatch)
@@ -441,7 +475,7 @@ class AudioConsumerTests(unittest.TestCase):
         target.write_bytes(self.payload)
         def replace(args):
             result = self.hermes(args)
-            if args[2] == "show":
+            if "show" in args:
                 self.source.unlink()
                 self.source.symlink_to(target)
             return result
@@ -463,13 +497,14 @@ class AudioConsumerTests(unittest.TestCase):
         # Both subprocesses use explicit fakes; no installed recognizer or Hermes.
         env = {key: value for key, value in os.environ.items() if not key.startswith("VOICE_KANBAN_")}
         env.update(VOICE_KANBAN_QUEUE_DIR=str(self.queue), VOICE_KANBAN_STATE_DIR=str(self.state),
+                   VOICE_KANBAN_BOARD="synthetic-board", VOICE_KANBAN_PROFILE="synthetic-profile",
                    VOICE_KANBAN_NOTIFY_TARGET="", VOICE_KANBAN_HERMES_BIN="synthetic-hermes")
         first = """
 from voice_kanban import consumer
 def create(args):
     raise consumer.CaptureError('synthetic lost create response')
 consumer.run_json = create
-raise SystemExit(consumer.main(transcriber=lambda path: 'Persist this whole transcript'))
+raise SystemExit(consumer.main(["--execute"], transcriber=lambda path: 'Persist this whole transcript'))
 """
         second = """
 from pathlib import Path
@@ -477,12 +512,12 @@ from voice_kanban import consumer
 def transcribe(path):
     raise AssertionError('must not transcribe after restart')
 def run(args):
-    if args[2] == 'create':
+    if 'create' in args:
         assert Path(args[args.index('--body-file') + 1]).read_text() == 'Persist this whole transcript'
         return {'id': 't_synthetic_audio'}
     return {'task': {'id': 't_synthetic_audio', 'body': 'Persist this whole transcript'}}
 consumer.run_json = run
-raise SystemExit(consumer.main(transcriber=transcribe))
+raise SystemExit(consumer.main(["--execute"], transcriber=transcribe))
 """
         result = subprocess.run([sys.executable, "-c", first], cwd=ROOT, env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 1, result.stderr)
@@ -502,6 +537,7 @@ raise SystemExit(consumer.main(transcriber=transcribe))
         self.source.unlink()
         env = {key: value for key, value in os.environ.items() if not key.startswith("VOICE_KANBAN_")}
         env.update(VOICE_KANBAN_QUEUE_DIR=str(self.queue), VOICE_KANBAN_STATE_DIR=str(self.state),
+                   VOICE_KANBAN_BOARD="synthetic-board", VOICE_KANBAN_PROFILE="synthetic-profile",
                    VOICE_KANBAN_NOTIFY_TARGET="", VOICE_KANBAN_HERMES_BIN=str(self.root / "missing-hermes"),
                    VOICE_KANBAN_STT_BACKEND="apple", VOICE_KANBAN_NATIVE_BIN=str(helper),
                    VOICE_KANBAN_STT_TIMEOUT="600", VOICE_KANBAN_LOCALE="en-US", PYTHONPATH=str(ROOT))
@@ -511,7 +547,7 @@ raise SystemExit(consumer.main(transcriber=transcribe))
                 name = f"capture-script-import-{index:04d}.m4a"
                 source = self.queue / name
                 source.write_bytes(self.payload)
-                result = subprocess.run([sys.executable] + entry, cwd=ROOT, env=env, capture_output=True, text=True)
+                result = subprocess.run([sys.executable] + entry + ["--execute"], cwd=ROOT, env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn("missing-hermes", result.stderr)
                 transcript = self.archive / ".transcripts" / (name + ".transcript.txt")

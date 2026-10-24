@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "native" / "transcribe.swift"
@@ -27,6 +28,31 @@ def native_sdk_available():
 
 
 class NativeSourceTests(unittest.TestCase):
+    def test_missing_assets_requires_a_supported_locale(self):
+        case = NativeSpeechTests("test_missing_assets_do_not_trigger_download")
+        (ROOT / ".local").mkdir(exist_ok=True)
+        work = tempfile.TemporaryDirectory(dir=ROOT / ".local")
+        self.addCleanup(work.cleanup)
+        case.work = work
+        payload = {"available": True, "locale_supported": False, "assets_installed": False}
+        with patch.object(case, "run_helper", return_value=subprocess.CompletedProcess(
+                [], 0, json.dumps(payload), "")) as run:
+            with self.assertRaises(unittest.SkipTest):
+                case.test_missing_assets_do_not_trigger_download()
+        self.assertEqual(run.call_count, 1)
+
+    def test_compiler_cache_stays_in_isolated_work_directory(self):
+        case = type("SyntheticSpeechTests", (NativeSpeechTests,), {})
+        try:
+            with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+                case.setUpClass()
+            command = run.call_args.args[0]
+            self.assertIn("-module-cache-path", command)
+            cache = Path(command[command.index("-module-cache-path") + 1])
+            cache.relative_to(Path(case.work.name))
+        finally:
+            case.doClassCleanups()
+
     def test_native_helper_is_shipped(self):
         self.assertTrue(SOURCE.is_file(), "native/transcribe.swift is missing")
 
@@ -40,7 +66,8 @@ class NativeSpeechTests(unittest.TestCase):
         cls.addClassCleanup(cls.work.cleanup)
         cls.binary = Path(cls.work.name) / "transcribe"
         compiled = subprocess.run(
-            ["xcrun", "swiftc", "-parse-as-library", "-target",
+            ["xcrun", "swiftc", "-parse-as-library", "-module-cache-path",
+             str(Path(cls.work.name) / "swift-module-cache"), "-target",
              platform.machine() + "-apple-macos26.0", str(SOURCE), "-o", str(cls.binary)],
             capture_output=True, text=True, timeout=180,
         )
@@ -85,8 +112,8 @@ class NativeSpeechTests(unittest.TestCase):
 
     def test_missing_assets_do_not_trigger_download(self):
         before = json.loads(self.run_helper("--check").stdout)
-        if not before["available"] or before["assets_installed"]:
-            self.skipTest("requires available transcriber without installed en-US assets")
+        if not before["available"] or not before["locale_supported"] or before["assets_installed"]:
+            self.skipTest("requires a supported en-US transcriber without installed assets")
         silence = Path(self.work.name) / "silence.wav"
         with wave.open(str(silence), "wb") as audio:
             audio.setnchannels(1)

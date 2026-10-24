@@ -6,6 +6,8 @@ From a clean clone, prepare a local Mac receiver and phone Shortcut using the us
 
 Setup has four explicit phases. An agent can perform them from one setup request, but must distinguish preparation from enabling real task execution. Never report a working phone installation from compilation or mocked checks alone.
 
+The setup CLI requires exactly one phase flag. A bare invocation prints usage and exits without preparation, writes or speech asset downloads.
+
 ## 1. Inspect prerequisites
 
 ```sh
@@ -68,7 +70,7 @@ Inspect queued captures and any configured notification destination first: activ
 python3 scripts/setup.py --activate
 ```
 
-The per-user LaunchAgent starts the dedicated receiver app through LaunchServices every 15 seconds. The native app runs the same frozen consumer and exits after its pass; it is not another agent or cloud backend. Use Apple's normal permission prompt to grant its iCloud access. Do not grant blanket shell/Python access, modify TCC records, or disable SIP.
+The per-user LaunchAgent starts the dedicated receiver app through LaunchServices every 15 seconds. The native app passes `--execute` through `scripts/consume.sh` to the frozen consumer and exits after its pass; it is not another agent or cloud backend. Use Apple's normal permission prompt to grant its iCloud access. Do not grant blanket shell/Python access, modify TCC records, or disable SIP.
 
 Inspect the installed definition and private receiver logs. An interactive shell can have permissions that launchd lacks: verify the actual scheduled identity's iCloud intake. `open -W` waiting for an app to finish does not itself establish successful delivery; the durable receipt and task readback are the authority.
 
@@ -109,17 +111,21 @@ Use the actual configured queue folder if it differs. Preserve an existing Short
 
 Inspect `receiver.log`, `receiver-error.log`, `receipts.sqlite3`, and `archive/` under the configured `VOICE_KANBAN_STATE_DIR`. Keep their contents private. If delivery is missing, first establish whether the recording synced, was archived, was transcribed, and has a confirmed task.
 
+From the installed runtime, `/bin/sh scripts/consume.sh` (or `--dry-run`) reports only the number of queued captures. It does not open or migrate receipts, acquire a lock, transcribe, send, submit or remove captures. The direct `python3 -m voice_kanban.consumer` command has the same default but reads settings from the environment; the shell wrapper sources the trusted configured shell file first. `--help` prints usage and invalid arguments fail before intake. Inspection does not validate recordings, speech assets, saved receipts or delivery.
+
+For a deliberate manual processing pass, use `/bin/sh scripts/consume.sh --execute` with the installation's trusted configuration after inspecting the queue and notification scope. Leave queue scheduling to launchd. New captures require nonempty `VOICE_KANBAN_BOARD` and `VOICE_KANBAN_PROFILE`; existing receipts retain their original routing, including historical implicit defaults. Receipts without saved routing bind the original configured route on their first upgraded execution pass.
+
 - **No synced recording:** check iCloud/Shortcuts sync and the exact queue folder. Keep the Mac awake and logged in. A partially synced file or saved notification is not delivery proof.
 - **Archived but not delivered:** fix the recorded error, unavailable helper/assets or stopped gateway. Pending audio can retry from its archive even if the queue file disappeared. Recognition and CLI calls have deadlines; uncertain creates retain the same capture identity and cached transcript.
 - **Missing or changed transcript:** restore its verified original under `archive/.transcripts/`. Never edit it after task creation, clear a pinned digest or retranscribe an uncertain create. Compare the task body and receipt before restoring anything.
 - **Collision or interrupted cleanup:** never overwrite an archive, rename a capture to force a new identity, or delete receipts. Inspect hidden `.cleanup-*` queue directories after a crash; retained files require manual comparison with the archive and receipt before restoring them. Do not overwrite a newer arrival.
 - **Older installations:** preserve original profile/board settings during the first upgraded pass, existing text markers and ledgers. Old orphaned text captures need their original queue source restored. Flat legacy transcript caches require verified provenance; an unrelated file is not a recovery transcript. Do not reset state to bypass migration checks.
-- **Optional notifications:** intake confirmation and message delivery are separate. An uncertain send may repeat a message; enabling a destination can send historical confirmations containing transcript summaries. Inspect that scope before enabling it.
+- **Optional notifications:** intake confirmation and message delivery are separate. A durable `notification_attempted_at` is committed before sending; a missing `notified_at` after that attempt requires manual delivery reconciliation and never triggers an automatic resend, even after a crash or destination change. On ledger upgrade, older confirmed, unnotified receipts are also held because their delivery history is uncertain. Preserve these markers and inspect provider delivery records before any manually authorized action; never clear attempts merely to retry. Enabling a destination can send confirmations created by the current ledger that have never been attempted, including transcript summaries. Inspect that scope first.
 
 Recordings and transcripts are retained indefinitely; there is no automatic purge. Hermes retry identities reduce duplicates, but do not guarantee exactly-once execution across archived/deleted tasks or externally edited cards. Back up config, archives and receipts before maintenance and preserve the previous working installation for rollback.
 
 ## Developer verification
 
-Run `make check` for isolated tests, source generation and shell syntax; generated configuration is syntax-checked in the setup tests. On a compatible Mac, `make native` compiles both Swift executables. Canonical tests do not download assets, import Shortcuts, activate services or touch live boards/queues.
+Run `python3 -m unittest discover -s tests -v` and `make check` for isolated tests, source generation and shell syntax; generated configuration is syntax-checked in the setup tests. Run `ruff check .` when Ruff is installed; `ruff.toml` pins Python 3.9 syntax and correctness rules. On a compatible Mac, `make native` compiles both Swift executables. All Swift compiler caches stay under `.local/`. Canonical tests do not download assets, import Shortcuts, activate services or touch live boards/queues. The native worker test invokes the production delegate through a synthetic driver without starting a GUI session; it checks execution arguments, paths and logs, not LaunchServices startup or scheduled access. The missing-assets test requires a supported locale and never prepares assets.
 
 The opt-in `scripts/test_audio_integration.py` harness checks real local transcription, exact task-body readback and duplicate-free replay on an isolated Hermes board; use `--help` for its required synthetic-audio, helper, CLI and expected-phrase arguments. Prepare/check speech assets at the final helper path first. `NATIVE_SPEECH_PROOF=1 python3 -m unittest discover -s tests -p test_native_speech.py -v` generates a synthetic long recording using `say` and ffmpeg. Neither check proves physical-phone capture, iCloud sync, scheduled permissions or automatic worker execution.

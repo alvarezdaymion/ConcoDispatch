@@ -52,6 +52,8 @@ Your assistant handles the Mac setup. Apple's permissions and phone controls sti
 
 Keep the Mac awake, logged in, and connected. Delivery isn't instant, and a saved notification doesn't mean the task is finished. Transcription can make mistakes. Recordings are kept until you remove them. Hermes's usual AI costs and approval rules still apply.
 
+Setup requires an explicit phase: `--check`, `--prepare`, `--import-shortcut` or `--activate`. Manual consumer commands inspect the queue by default; `--execute` enables processing and requires explicit board/profile routing for new captures. The activated receiver supplies that option. Optional delivery notifications are attempted once; uncertain delivery requires [reconciliation](docs/setup.md#troubleshooting-and-recovery).
+
 ## More information
 
 [Setup, testing and recovery](docs/setup.md) · [Privacy and security](SECURITY.md)
