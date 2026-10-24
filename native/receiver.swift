@@ -35,7 +35,7 @@ final class ReceiverDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.global(qos: .utility).async {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
-            process.arguments = [paths.runtime.appendingPathComponent("scripts/consume.sh").path]
+            process.arguments = [paths.runtime.appendingPathComponent("scripts/consume.sh").path, "--execute"]
             process.currentDirectoryURL = paths.runtime
             var environment = ProcessInfo.processInfo.environment
             environment["HOME"] = FileManager.default.homeDirectoryForCurrentUser.path

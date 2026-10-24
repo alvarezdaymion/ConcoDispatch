@@ -10,7 +10,7 @@ ConcoDispatch turns queue files into agent tasks. Treat the queue, receiver conf
 - `config.sh` is executable shell configuration. Source only trusted files and keep notification destinations private.
 - Setup builds a dedicated locally signed receiver app for macOS file-access consent. Grant only that app's required access through the normal OS flow. Compilation and interactive CLI access do not prove launchd's privacy permissions; never write TCC records or grant blanket shell/Python access to bypass a failure.
 - Preparation does not activate intake or import Shortcuts. Activation can process existing queued work and historical optional notifications; inspect those inputs and agent permissions first. Back up an existing app/helper/definition before an approved stopped-service upgrade, leaving config, archives and receipts intact.
-- Optional notifications contain a short transcript summary. Enabling a destination can deliver historical, previously unnotified confirmations. Sends occur after intake/cleanup and use bounded CLI calls.
+- Optional notifications contain a short transcript summary. Enabling a destination can deliver confirmations with no prior attempt in the current ledger. Sends occur after intake/cleanup and use bounded CLI calls with a committed attempt marker. Uncertain sends and older unnotified confirmations require manual delivery reconciliation; they never retry automatically.
 - Ignore rules prevent accidental staging of common runtime files; they do not remove already tracked data or sanitize recordings.
 
 ## Reporting vulnerabilities

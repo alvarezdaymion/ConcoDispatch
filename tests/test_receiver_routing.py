@@ -1,6 +1,5 @@
 """Routing/deadline contracts; never address a real board or service."""
 import os
-from pathlib import Path
 import subprocess
 from types import SimpleNamespace
 import unittest

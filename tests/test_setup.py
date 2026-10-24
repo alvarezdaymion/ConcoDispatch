@@ -15,6 +15,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SetupTests(unittest.TestCase):
+    def test_missing_phase_is_rejected_before_any_action(self):
+        self.platform_fixture()
+        before = {str(p): p.read_bytes() for p in self.home.rglob("*") if p.is_file()}
+        with self.assertRaises(SystemExit) as error:
+            self.invoke()
+        self.assertEqual(error.exception.code, 2)
+        self.assertFalse(self.calls)
+        self.assertEqual(before, {str(p): p.read_bytes() for p in self.home.rglob("*") if p.is_file()})
+
     def test_native_build_uses_committed_inputs_without_deploying_sources(self):
         self.platform_fixture()
         inputs = []
@@ -178,13 +187,13 @@ class SetupTests(unittest.TestCase):
         self.assertFalse(self.config.exists())
         self.assertFalse(self.loaded)
 
-    def test_existing_native_helper_and_default_prepare_are_preserved(self):
+    def test_existing_native_helper_is_preserved_during_explicit_prepare(self):
         self.platform_fixture()
         helper = self.state / 'bin/transcribe'
         helper.parent.mkdir(parents=True)
         helper.write_bytes(b'existing trusted helper')
         helper.chmod(0o700)
-        self.assertEqual(self.invoke()[0], 0)
+        self.assertEqual(self.invoke("--prepare")[0], 0)
         self.assertEqual(helper.read_bytes(), b'existing trusted helper')
         self.assertFalse(any(Path(arg).name == 'transcribe.swift' for c in self.calls for arg in c))
 

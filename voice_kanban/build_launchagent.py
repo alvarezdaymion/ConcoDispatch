@@ -19,7 +19,8 @@ def build_launchagent(runtime: Path, *, config: Path = DEFAULT_STATE / 'config.s
         raise ValueError('Polling interval must be positive')
     if not (runtime / 'scripts/consume.sh').is_file():
         raise ValueError('Runtime must contain scripts/consume.sh')
-    arguments = ['/bin/sh', str(runtime / 'scripts/consume.sh')]
+    # An activated agent processes the queue; a bare consumer run only inspects it.
+    arguments = ['/bin/sh', str(runtime / 'scripts/consume.sh'), '--execute']
     if app is not None:
         arguments = ['/usr/bin/open', '-W', '-g', '-a', str(app.expanduser().absolute()),
                      '--args', '--runtime', str(runtime), '--config', str(config),

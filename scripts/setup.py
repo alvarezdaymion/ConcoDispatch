@@ -20,9 +20,9 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT))
-from scripts.install_snapshot import git, install_snapshot
-from voice_kanban.build_launchagent import LABEL, build_launchagent
-from voice_kanban.build_shortcut import write_unsigned
+from scripts.install_snapshot import git, install_snapshot  # noqa: E402
+from voice_kanban.build_launchagent import LABEL, build_launchagent  # noqa: E402
+from voice_kanban.build_shortcut import write_unsigned  # noqa: E402
 
 SETTINGS = ('HERMES_BIN', 'PYTHON', 'STT_BACKEND', 'NATIVE_BIN', 'LOCALE',
             'STT_TIMEOUT', 'CLI_TIMEOUT', 'PROFILE', 'BOARD', 'ASSIGNEE',
@@ -278,7 +278,7 @@ def prepare(args, home, config, cloud, values, queue):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    modes = parser.add_mutually_exclusive_group()
+    modes = parser.add_mutually_exclusive_group(required=True)
     for mode in ('check', 'prepare', 'activate', 'import-shortcut'):
         modes.add_argument('--' + mode, action='store_true')
     parser.add_argument('--home', type=Path, default=Path.home())
@@ -335,7 +335,8 @@ def main(argv=None):
                 raise RuntimeError('Receiver activation was not verified')
             print('Receiver loaded; phone capture and worker delivery still require an end-to-end check')
             return 0
-        return prepare(args, home, config, cloud, values, queue)
+        if args.prepare:
+            return prepare(args, home, config, cloud, values, queue)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, plistlib.InvalidFileException):
         # Never expose subprocess/config payloads or arbitrary filesystem diagnostics.
         error = sys.exc_info()[1]

@@ -1,4 +1,4 @@
-"""Portable native host: isolated consumer only; no iCloud or service activation."""
+"""Native worker contracts; no GUI session, iCloud or service activation."""
 import os
 from pathlib import Path
 import shutil
@@ -33,9 +33,23 @@ class NativeReceiverHostTests(unittest.TestCase):
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.root = Path(cls.temporary.name)
         cls.binary = cls.root / 'receiver'
-        subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-module-cache-path',
-                        str(scratch / 'swift-module-cache'), str(ROOT / 'native/receiver.swift'),
-                        '-o', str(cls.binary)], capture_output=True, text=True, check=True)
+        source = ROOT / 'native/receiver.swift'
+        driver = cls.root / 'worker.swift'
+        driver.write_text(source.read_text().split('@main\n')[0] + '''
+@main
+struct SyntheticWorker {
+    static func main() throws {
+        let delegate = ReceiverDelegate(try Paths(Array(CommandLine.arguments.dropFirst())))
+        delegate.applicationDidFinishLaunching(Notification(name: Notification.Name("synthetic")))
+        dispatchMain()
+    }
+}
+''')
+        cls.worker = cls.root / 'worker'
+        for source, binary in ((source, cls.binary), (driver, cls.worker)):
+            subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-module-cache-path',
+                            str(scratch / 'swift-module-cache'), str(source), '-o', str(binary)],
+                           capture_output=True, text=True, check=True, timeout=180)
 
     def test_explicit_paths_reach_only_the_isolated_consumer_and_logs(self):
         runtime, state = self.root / 'runtime', self.root / 'state'
@@ -44,11 +58,11 @@ class NativeReceiverHostTests(unittest.TestCase):
         config = self.root / 'config.sh'
         config.write_text('# synthetic private configuration\n')
         (runtime / 'scripts/consume.sh').write_text(
-            'test "$VOICE_KANBAN_CONFIG" = "$1" || :\n'
+            'test "$1" = "--execute" || exit 9\n'
             'printf "config=%s\\nstate=%s\\ncwd=%s\\n" "$VOICE_KANBAN_CONFIG" '
             '"$VOICE_KANBAN_STATE_DIR" "$PWD"\n'
             'printf "synthetic error\\n" >&2\nexit 7\n')
-        result = subprocess.run([str(self.binary), '--runtime', str(runtime), '--config',
+        result = subprocess.run([str(self.worker), '--runtime', str(runtime), '--config',
                                  str(config), '--state', str(state)], capture_output=True,
                                 text=True, timeout=30)
         self.assertEqual(result.returncode, 7, result.stderr)

@@ -35,7 +35,8 @@ class ConsumerTests(unittest.TestCase):
         self.env.update(VOICE_KANBAN_HERMES_BIN=str(self.hermes),
                         VOICE_KANBAN_QUEUE_DIR=str(self.queue),
                         VOICE_KANBAN_STATE_DIR=str(self.state),
-                        VOICE_KANBAN_NOTIFY_TARGET="")
+                        VOICE_KANBAN_NOTIFY_TARGET="",
+                        VOICE_KANBAN_BOARD="default", VOICE_KANBAN_PROFILE="default")
         self.stub()
 
     def stub(self, behavior=""):
@@ -43,7 +44,7 @@ class ConsumerTests(unittest.TestCase):
             f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
             f"root = Path({str(self.root)!r})\n"
             "args = sys.argv[1:]\n"
-            "creating = args[:2] == ['kanban', 'create']\n"
+            "creating = 'kanban' in args and 'create' in args\n"
             "if creating and not list((root / 'state' / 'archive').glob('*.txt')):\n"
             "    raise SystemExit('archive missing before create')\n"
             "with (root / 'calls.jsonl').open('a') as stream:\n"
@@ -58,8 +59,10 @@ class ConsumerTests(unittest.TestCase):
         source.write_bytes(envelope(capture_id, text, marker))
         return source
 
-    def run_consumer(self, code=0):
-        result = subprocess.run([sys.executable, str(CONSUMER)], env=self.env,
+    def run_consumer(self, code=0, args=("--execute",), wrapper=False):
+        command = (["/bin/sh", str(ROOT / "scripts/consume.sh")] if wrapper
+                   else [sys.executable, str(CONSUMER)])
+        result = subprocess.run(command + list(args), env=self.env,
                                 capture_output=True, text=True, cwd=ROOT)
         self.assertEqual(result.returncode, code, result.stderr)
         return result
@@ -71,6 +74,97 @@ class ConsumerTests(unittest.TestCase):
         with sqlite3.connect(self.state / "receipts.sqlite3") as db:
             return db.execute(f"SELECT {fields} FROM captures").fetchone()
 
+    def test_inspection_help_and_invalid_options_never_process_queue(self):
+        source = self.capture()
+        original = source.read_bytes()
+        self.env.update(VOICE_KANBAN_CONFIG=str(self.root / "absent.sh"),
+                        VOICE_KANBAN_PYTHON=sys.executable)
+        for key in ("VOICE_KANBAN_BOARD", "VOICE_KANBAN_PROFILE"):
+            self.env.pop(key)
+        for wrapper in (False, True):
+            for args, code in (((), 0), (("--dry-run",), 0), (("--help",), 0),
+                               (("--unknown",), 2), (("--execute", "--dry-run"), 2)):
+                with self.subTest(wrapper=wrapper, args=args):
+                    self.run_consumer(code, args=args, wrapper=wrapper)
+                    self.assertEqual(source.read_bytes(), original)
+                    self.assertFalse(self.state.exists())
+                    self.assertFalse(self.calls.exists())
+
+    def test_inspection_preserves_existing_receipt_and_notification_state(self):
+        self.capture()
+        self.run_consumer()
+        self.env["VOICE_KANBAN_NOTIFY_TARGET"] = "test-channel"
+        before = {p.relative_to(self.state): p.read_bytes()
+                  for p in self.state.rglob("*") if p.is_file()}
+        for args in ((), ("--dry-run",), ("--help",)):
+            self.run_consumer(args=args)
+            self.assertEqual(before, {p.relative_to(self.state): p.read_bytes()
+                                      for p in self.state.rglob("*") if p.is_file()})
+        self.assertEqual(len(self.recorded()), 1)
+
+    def test_execute_rejects_missing_or_malformed_new_routing(self):
+        source = self.capture()
+        for key in ("BOARD", "PROFILE", "ASSIGNEE"):
+            name = "VOICE_KANBAN_" + key
+            for value in ("", "--other", "bad\nroute"):
+                with self.subTest(key=key, value=value):
+                    self.env[name] = value
+                    self.run_consumer(1)
+                    self.assertTrue(source.exists())
+                    self.assertFalse(self.calls.exists())
+            self.env[name] = "default"
+
+    def test_wrapper_forwards_explicit_execution(self):
+        source = self.capture()
+        self.env.update(VOICE_KANBAN_CONFIG=str(self.root / "absent.sh"),
+                        VOICE_KANBAN_PYTHON=sys.executable)
+        self.run_consumer(wrapper=True)
+        self.assertFalse(source.exists())
+        self.assertEqual(self.receipt()[:2], ("confirmed", "t_synthetic"))
+
+    def test_notification_attempt_is_committed_before_delivery(self):
+        self.env["VOICE_KANBAN_NOTIFY_TARGET"] = "test-channel"
+        self.stub("if not creating:\n"
+                  "    import sqlite3\n"
+                  "    with sqlite3.connect(root / 'state/receipts.sqlite3') as db:\n"
+                  "        attempted, = db.execute('SELECT notification_attempted_at FROM captures').fetchone()\n"
+                  "    assert attempted is not None\n"
+                  "    raise SystemExit(1)\n")
+        self.capture()
+        self.run_consumer(1)
+        self.assertIsNotNone(self.receipt("notification_attempted_at")[0])
+        self.run_consumer()
+        self.assertEqual(sum("send" in a for a in self.recorded()), 1)
+
+    def test_historical_uncertain_notifications_are_held_during_migration(self):
+        self.capture()
+        self.run_consumer()
+        with sqlite3.connect(self.state / "receipts.sqlite3") as db:
+            columns = [row[1] for row in db.execute("PRAGMA table_info(captures)")
+                       if row[1] != "notification_attempted_at"]
+            fields = ", ".join(columns)
+            db.execute("ALTER TABLE captures RENAME TO old_captures")
+            db.execute("CREATE TABLE captures AS SELECT " + fields + " FROM old_captures")
+            db.execute("DROP TABLE old_captures")
+        self.env["VOICE_KANBAN_NOTIFY_TARGET"] = "test-channel"
+        self.run_consumer()
+        self.assertEqual(len(self.recorded()), 1)
+        self.assertEqual(self.receipt()[:2], ("confirmed", "t_synthetic"))
+        self.assertIsNotNone(self.receipt("notification_attempted_at")[0])
+
+    def test_changed_archive_is_not_used_for_notification(self):
+        source = self.capture()
+        self.run_consumer()
+        archive = self.state / "archive" / source.name
+        original = archive.read_bytes()
+        archive.write_bytes(envelope(source.stem, "Changed synthetic text"))
+        self.env["VOICE_KANBAN_NOTIFY_TARGET"] = "test-channel"
+        self.run_consumer(1)
+        self.assertEqual(len(self.recorded()), 1)
+        archive.write_bytes(original)
+        self.run_consumer()
+        self.assertEqual(sum("send" in a for a in self.recorded()), 1)
+
     def test_archive_before_idempotent_create_and_optional_receipt(self):
         self.env["VOICE_KANBAN_NOTIFY_TARGET"] = "test-channel"
         source = self.capture()
@@ -80,13 +174,14 @@ class ConsumerTests(unittest.TestCase):
         self.assertFalse(source.exists())
         self.assertEqual((self.state / "archive" / source.name).read_bytes(), payload)
         create, notification = self.recorded()
-        self.assertEqual(create[:3], ["kanban", "create", "Draft a project outline"])
+        self.assertEqual(create[:7], ["--profile", "default", "kanban", "--board", "default",
+                                      "create", "Draft a project outline"])
         self.assertEqual(create[create.index("--assignee") + 1], "default")
         self.assertEqual(create[create.index("--idempotency-key") + 1],
                          f"iphone-voice-capture:{source.stem}")
         self.assertEqual(create[-1], "--json")
-        self.assertEqual(notification[:3], ["send", "--to", "test-channel"])
-        self.assertIn("t_synthetic", notification[3])
+        self.assertEqual(notification[:5], ["--profile", "default", "send", "--to", "test-channel"])
+        self.assertIn("t_synthetic", notification[5])
         self.assertEqual(self.receipt()[:2], ("confirmed", "t_synthetic"))
         self.assertIsNotNone(self.receipt()[2])
 
@@ -111,7 +206,7 @@ class ConsumerTests(unittest.TestCase):
         source.write_bytes(payload)
         self.run_consumer()
         create, = self.recorded()
-        self.assertEqual(create[2], payload.decode().strip())
+        self.assertEqual(create[create.index("create") + 1], payload.decode().strip())
         key = create[create.index("--idempotency-key") + 1]
         self.assertRegex(key, r"^iphone-voice-capture:legacy-[0-9a-f]{64}$")
         self.assertEqual((self.state / "archive" / (key.split(":", 1)[1] + ".txt")).read_bytes(), payload)
@@ -132,13 +227,13 @@ class ConsumerTests(unittest.TestCase):
         self.run_consumer()
         calls = self.recorded()
         self.assertEqual(len(calls), 10)
-        self.assertTrue(all(a[:2] == ["kanban", "create"] for a in calls))
+        self.assertTrue(all("create" in a for a in calls))
         self.assertEqual(len({a[a.index("--idempotency-key") + 1] for a in calls}), 10)
         self.assertEqual(len(list((self.state / "archive").glob("*.txt"))), 10)
         self.assertEqual(self.receipt("COUNT(*)"), (10,))
         self.assertEqual(list(self.queue.iterdir()), [])
 
-    def test_notification_retries_from_archive_when_source_disappears(self):
+    def test_uncertain_notification_is_not_sent_again_after_restart(self):
         self.env["VOICE_KANBAN_NOTIFY_TARGET"] = "test-channel"
         self.stub("if not creating and not (root / 'send-attempted').exists():\n"
                   "    (root / 'send-attempted').touch()\n"
@@ -149,9 +244,10 @@ class ConsumerTests(unittest.TestCase):
         self.assertFalse(source.exists(), 'A failed optional send must not retain a confirmed queue entry')
         self.run_consumer()
         calls = self.recorded()
-        self.assertEqual(sum(a[:2] == ["kanban", "create"] for a in calls), 1)
-        self.assertEqual(sum(a[:2] == ["send", "--to"] for a in calls), 2)
-        self.assertIsNotNone(self.receipt()[2])
+        self.assertEqual(sum("create" in a for a in calls), 1)
+        self.assertEqual(sum("send" in a for a in calls), 1)
+        self.assertIsNone(self.receipt()[2])
+        self.assertIsNotNone(self.receipt("notification_attempted_at")[0])
 
     def test_filename_mismatch_archived_and_rejected_before_create(self):
         source = self.capture()
@@ -180,7 +276,7 @@ class ConsumerTests(unittest.TestCase):
         source = self.capture(marker="LOCALVOICE/2")
         self.run_consumer()
         create, = self.recorded()
-        self.assertEqual(create[2], "Draft a project outline")
+        self.assertEqual(create[create.index("create") + 1], "Draft a project outline")
         self.assertEqual(create[create.index("--idempotency-key") + 1],
                          f"iphone-voice-capture:{source.stem}")
 

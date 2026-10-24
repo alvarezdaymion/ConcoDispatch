@@ -7,7 +7,9 @@
 - Apple speech asset download requires explicit `--prepare`. Normal transcription must remain local, bounded, and download-free.
 - Preserve existing text-capture recovery and ledger migrations; new Shortcuts generate audio only.
 - Pin explicit board/profile routing on new deployments and preserve each receipt's original routing during retries.
+- Consumer commands inspect by default; only `--execute` may process captures. The activated native receiver must supply it through the shell wrapper.
 - Keep the mobile idempotency key `iphone-voice-capture:<capture_id>` stable. Archive before create, retain changed sources, and retry uncertain creates with the same key.
+- Commit a notification attempt before sending. Never automatically resend an uncertain attempt; historical unnotified confirmations require delivery reconciliation.
 - A queued notification must not imply Kanban confirmation.
 - Use home-relative defaults and `VOICE_KANBAN_*` configuration. Preserve existing receipt ledgers when updating.
 
@@ -15,12 +17,14 @@
 
 - Read `docs/setup.md`, run `python3 scripts/setup.py --check`, and resolve the reported prerequisites using official tools/docs. Reuse the user's configured Hermes and Apple accounts; stop for owner authentication or phone-only confirmations. Never ask for secrets in chat.
 - Use the explicit setup CLI preparation, import and activation phases. Preparation alone must not load a service, import a Shortcut, submit a test task or restart the Hermes gateway. A setup request permits the agent to perform these phases deliberately, after inspecting the actual queue and routing.
+- A setup CLI phase is required; invocation without one must fail before preparation or asset downloads.
 - Preserve existing configuration bytes, receipt state, recordings and same-named Shortcut identities. Refuse unsupported upgrades rather than silently changing backends, routing or button bindings. Do not overwrite a running receiver's code.
 - Verify iCloud access under the scheduled native app identity, exact full task body and real worker kickoff. Queued notifications, compilation, fake homes and mocked tools are not physical-phone proof. Use a harmless diagnostic request only when its real execution is authorized.
 
 ## Verification
 
 - Run `make check` before submitting a change. On a compatible Mac, also run `make native`.
+- Use Swift compiler caches under `.local/`. Run `ruff check .` with the repository's Python 3.9 lint configuration when Ruff is available.
 - Keep canonical tests synthetic and isolated under `.local/` with stubbed Hermes. Opt-in audio integration may use a real CLI with an isolated `HOME`, `HERMES_HOME` and `HERMES_KANBAN_DB`; never touch a live board, gateway, cloud queue, or notification destination.
 - Do not import Shortcuts, activate services, or deploy runtime files during tests.
 - Source generation and mocked tests do not prove microphone capture, physical-device behavior, iCloud synchronization, delivery, or gateway execution. Document those limits explicitly.

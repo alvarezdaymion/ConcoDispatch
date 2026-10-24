@@ -48,7 +48,7 @@ def main() -> int:
                    HERMES_KANBAN_BOARD='default', VOICE_KANBAN_HERMES_BIN=str(hermes),
                    VOICE_KANBAN_QUEUE_DIR=str(queue), VOICE_KANBAN_STATE_DIR=str(state),
                    VOICE_KANBAN_STT_BACKEND='apple', VOICE_KANBAN_NATIVE_BIN=str(native),
-                   VOICE_KANBAN_BOARD='default', VOICE_KANBAN_ASSIGNEE='default',
+                   VOICE_KANBAN_BOARD='default', VOICE_KANBAN_PROFILE='default', VOICE_KANBAN_ASSIGNEE='default',
                    VOICE_KANBAN_NOTIFY_TARGET='', PYTHONDONTWRITEBYTECODE='1')
         # Explicit --board outranks HERMES_KANBAN_DB; pin the board root too.
         run([str(hermes), 'kanban', '--board', 'default', 'init'], env)
@@ -58,7 +58,7 @@ def main() -> int:
         shutil.copyfile(audio, source)
         digest = hashlib.sha256(audio.read_bytes()).hexdigest()
         start = time.monotonic()
-        run([sys.executable, '-m', 'voice_kanban.consumer'], env, timeout=660)
+        run([sys.executable, '-m', 'voice_kanban.consumer', '--execute'], env, timeout=660)
         elapsed = time.monotonic() - start
         with sqlite3.connect(state / 'receipts.sqlite3') as receipts:
             task_id, status = receipts.execute('SELECT task_id, status FROM captures').fetchone()
@@ -78,7 +78,7 @@ def main() -> int:
         shutil.copyfile(audio, source)
         # Replay must use the pinned cache even when the recognizer disappears.
         env['VOICE_KANBAN_NATIVE_BIN'] = str(fixture / 'missing-native-helper')
-        run([sys.executable, '-m', 'voice_kanban.consumer'], env)
+        run([sys.executable, '-m', 'voice_kanban.consumer', '--execute'], env)
         with sqlite3.connect(db) as board:
             count = board.execute('SELECT COUNT(*) FROM tasks').fetchone()[0]
         if count != 1 or source.exists():

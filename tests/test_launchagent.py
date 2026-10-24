@@ -10,7 +10,7 @@ class LaunchAgentTests(unittest.TestCase):
     def test_receiver_runs_nonoverlapping_bounded_passes(self):
         from voice_kanban.build_launchagent import build_launchagent
         definition = build_launchagent(ROOT, config=Path.home() / 'config.sh')
-        self.assertEqual(definition['ProgramArguments'], ['/bin/sh', str(ROOT / 'scripts/consume.sh')])
+        self.assertEqual(definition['ProgramArguments'], ['/bin/sh', str(ROOT / 'scripts/consume.sh'), '--execute'])
         self.assertEqual(definition['StartInterval'], 15)
         self.assertTrue(definition['RunAtLoad'])
         self.assertNotIn('KeepAlive', definition)
